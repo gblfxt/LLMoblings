@@ -2,6 +2,7 @@ package com.goodbird.player2npc.client.gui;
 
 import adris.altoclef.player2api.Character;
 import adris.altoclef.player2api.utils.CharacterUtils;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.text.Text;
@@ -23,7 +24,7 @@ public class CharacterSelectionScreen extends Screen {
         this.clearChildren();
         isLoading = true;
 
-        CompletableFuture.supplyAsync(()->CharacterUtils.requestCharacters("player2-ai-npc-minecraft"))
+        CompletableFuture.supplyAsync(()->CharacterUtils.requestCharacters(MinecraftClient.getInstance().player, "player2-ai-npc-minecraft"))
                 .thenAcceptAsync(result -> {
                     this.characters = result;
                     this.isLoading = false;

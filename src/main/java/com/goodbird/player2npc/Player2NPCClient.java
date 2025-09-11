@@ -1,7 +1,5 @@
 package com.goodbird.player2npc;
 
-import adris.altoclef.player2api.client.ClientHeartbeatManager;
-
 import com.goodbird.player2npc.client.gui.CharacterSelectionScreen;
 import com.goodbird.player2npc.client.render.RenderAutomaton;
 import com.goodbird.player2npc.network.AutomatonSpawnPacket;
@@ -32,8 +30,6 @@ public class Player2NPCClient implements ClientModInitializer {
         ));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            ClientHeartbeatManager.onClientTick("player2-ai-npc-minecraft");
-
             if (openCharacterScreenKeybind.wasPressed()) {
                 if (client.world != null) {
                     client.setScreen(new CharacterSelectionScreen());

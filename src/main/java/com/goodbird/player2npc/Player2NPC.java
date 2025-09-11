@@ -53,6 +53,9 @@ public class Player2NPC implements ModInitializer {
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             CompanionManager.KEY.get(handler.player).summonAllCompanionsAsync();
         });
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            CompanionManager.KEY.get(handler.player).dismissAllCompanions();
+        });
         ServerTickEvents.END_SERVER_TICK.register(server -> {
             AltoClefController.staticServerTick(server);
         });
