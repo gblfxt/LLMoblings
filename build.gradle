@@ -1,78 +1,97 @@
 plugins {
-    id 'fabric-loom' version '1.6-SNAPSHOT'
-    id 'io.github.ladysnake.chenille' version "0.11.3"
+    id 'java'
+    id 'idea'
+    id 'net.neoforged.moddev' version '2.0.131'
 }
 
-group project.maven_group
-version project.mod_version
-
-java.toolchain.languageVersion = JavaLanguageVersion.of(17)
-
-compileJava {
-    options.encoding = "UTF-8"
-}
+version = project.mod_version
+group = project.maven_group
 
 repositories {
     mavenCentral()
-
-    chenille.repositories {
-        ladysnake()
-        jamieswhiteshirt()
-    }
-
     maven {
-        name = 'Quilt Snapshots'
-        url = 'https://maven.quiltmc.org/repository/snapshot'
-    }
-
-    maven {
-        url = "https://maven.quiltmc.org/repository/release/"
-    }
-
-    mavenLocal()
-
-    flatDir {
-        dir 'libs'
+        name = 'NeoForged'
+        url = 'https://maven.neoforged.net/releases'
     }
 }
+
+base {
+    archivesName = project.mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        client {
+            client()
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+
+        server {
+            server()
+            programArgument '--nogui'
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+
+        data {
+            data()
+            programArguments.addAll '--mod', project.mod_id, '--all', '--output', file('src/generated/resources/').getAbsolutePath(), '--existing', file('src/main/resources/').getAbsolutePath()
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 dependencies {
-    minecraft "com.mojang:minecraft:${minecraft_version}"
-    mappings "org.quiltmc:quilt-mappings:${minecraft_version}+build.${quilt_mappings}:intermediary-v2"
-    modImplementation "net.fabricmc:fabric-loader:0.15.6"
-    modImplementation "net.fabricmc.fabric-api:fabric-api:0.92.1+1.20.1"
-    modImplementation "libs:PlayerEngine:+"
-    implementation 'com.google.code.findbugs:jsr305:3.0.2'
-    modImplementation("dev.onyxstudios.cardinal-components-api:cardinal-components-base:${cca_version}") {
-        transitive = false
-    }
-    modImplementation("dev.onyxstudios.cardinal-components-api:cardinal-components-entity:${cca_version}") {
-        transitive = false
-    }
-    modImplementation("dev.onyxstudios.cardinal-components-api:cardinal-components-world:${cca_version}") {
-        transitive = false
-    }
+    // OkHttp for Ollama API calls
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+
+    // Gson for JSON parsing (Minecraft includes this, but explicit for clarity)
+    implementation 'com.google.code.gson:gson:2.10.1'
 }
 
-java {
-    withSourcesJar()
-}
+tasks.withType(ProcessResources).configureEach {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            neo_version_range      : neo_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
 
-jar {
-    from sourceSets.main.output
-
-    preserveFileTimestamps = false
-    reproducibleFileOrder = true
-
-    manifest {
-        attributes(
-                'Implementation-Title': 'Player2NPC',
-                'Implementation-Version': project.version
-        )
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand replaceProperties
     }
 }
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
-    options.compilerArgs += ["-Xmaxerrs", "500000"]
+}
+
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
 }

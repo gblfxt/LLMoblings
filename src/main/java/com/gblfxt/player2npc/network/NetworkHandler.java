@@ -1,0 +1,38 @@
+package com.gblfxt.player2npc.network;
+
+import com.gblfxt.player2npc.Player2NPC;
+import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.neoforged.neoforge.network.registration.PayloadRegistrar;
+
+public class NetworkHandler {
+
+    public static void register() {
+        // Network registration happens via event in NeoForge
+        // See registerPayloads method
+    }
+
+    public static void registerPayloads(final RegisterPayloadHandlersEvent event) {
+        final PayloadRegistrar registrar = event.registrar(Player2NPC.MOD_ID);
+
+        // Register spawn companion packet (C2S)
+        registrar.playToServer(
+                SpawnCompanionPacket.TYPE,
+                SpawnCompanionPacket.STREAM_CODEC,
+                SpawnCompanionPacket::handle
+        );
+
+        // Register despawn companion packet (C2S)
+        registrar.playToServer(
+                DespawnCompanionPacket.TYPE,
+                DespawnCompanionPacket.STREAM_CODEC,
+                DespawnCompanionPacket::handle
+        );
+
+        // Register chat to companion packet (C2S)
+        registrar.playToServer(
+                CompanionChatPacket.TYPE,
+                CompanionChatPacket.STREAM_CODEC,
+                CompanionChatPacket::handle
+        );
+    }
+}
