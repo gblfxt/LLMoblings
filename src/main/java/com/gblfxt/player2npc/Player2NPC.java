@@ -1,5 +1,6 @@
 package com.gblfxt.player2npc;
 
+import com.gblfxt.player2npc.command.CompanionCommand;
 import com.gblfxt.player2npc.entity.CompanionEntity;
 import com.gblfxt.player2npc.network.NetworkHandler;
 import net.minecraft.core.registries.Registries;
@@ -13,6 +14,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.entity.EntityAttributeCreationEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
@@ -49,6 +51,7 @@ public class Player2NPC {
 
         // Register game event listeners
         NeoForge.EVENT_BUS.addListener(this::onServerTick);
+        NeoForge.EVENT_BUS.addListener(this::registerCommands);
 
         // Register config
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
@@ -69,6 +72,11 @@ public class Player2NPC {
 
     private void registerPayloads(final RegisterPayloadHandlersEvent event) {
         NetworkHandler.registerPayloads(event);
+    }
+
+    private void registerCommands(final RegisterCommandsEvent event) {
+        CompanionCommand.register(event.getDispatcher());
+        LOGGER.info("Player2NPC commands registered");
     }
 
     @SubscribeEvent
