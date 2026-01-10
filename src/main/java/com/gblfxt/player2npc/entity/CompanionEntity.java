@@ -23,7 +23,11 @@ import net.minecraft.world.entity.ai.goal.OpenDoorGoal;
 import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ArmorItem;
+import net.minecraft.world.item.AxeItem;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.SwordItem;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -109,6 +113,11 @@ public class CompanionEntity extends PathfinderMob implements Container {
             // Auto-eat when health is low (every 2 seconds)
             if (this.tickCount % 40 == 0) {
                 tryEatFood();
+            }
+
+            // Auto-equip best items (every 3 seconds)
+            if (this.tickCount % 60 == 0) {
+                autoEquipBestItems();
             }
 
             // Start/update chunk loading
@@ -218,6 +227,112 @@ public class CompanionEntity extends PathfinderMob implements Container {
                 break;  // Only eat one item per check
             }
         }
+    }
+
+    /**
+     * Automatically equip the best items from inventory.
+     */
+    private void autoEquipBestItems() {
+        // Check for better weapon
+        ItemStack currentWeapon = getMainHandItem();
+        float currentDamage = getItemDamage(currentWeapon);
+
+        int bestWeaponSlot = -1;
+        float bestDamage = currentDamage;
+
+        for (int i = 0; i < inventory.size(); i++) {
+            ItemStack stack = inventory.get(i);
+            if (stack.isEmpty()) continue;
+
+            Item item = stack.getItem();
+            if (item instanceof SwordItem || item instanceof AxeItem) {
+                float damage = getItemDamage(stack);
+                if (damage > bestDamage) {
+                    bestDamage = damage;
+                    bestWeaponSlot = i;
+                }
+            }
+        }
+
+        if (bestWeaponSlot >= 0) {
+            // Swap to better weapon
+            ItemStack betterWeapon = inventory.get(bestWeaponSlot);
+            if (!currentWeapon.isEmpty()) {
+                inventory.set(bestWeaponSlot, currentWeapon);
+            } else {
+                inventory.set(bestWeaponSlot, ItemStack.EMPTY);
+            }
+            setItemSlot(EquipmentSlot.MAINHAND, betterWeapon);
+            Player2NPC.LOGGER.info("[{}] Equipped better weapon: {}", getCompanionName(), betterWeapon.getItem().getDescription().getString());
+
+            Player owner = getOwner();
+            if (owner != null) {
+                owner.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                        "[" + getCompanionName() + "] *equips " + betterWeapon.getItem().getDescription().getString() + "*"
+                ));
+            }
+        }
+
+        // Check for better armor
+        for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+            ItemStack currentArmor = getItemBySlot(slot);
+            float currentProtection = getArmorProtection(currentArmor);
+
+            int bestArmorSlot = -1;
+            float bestProtection = currentProtection;
+
+            for (int i = 0; i < inventory.size(); i++) {
+                ItemStack stack = inventory.get(i);
+                if (stack.isEmpty()) continue;
+
+                if (stack.getItem() instanceof ArmorItem armorItem) {
+                    if (armorItem.getEquipmentSlot() == slot) {
+                        float protection = getArmorProtection(stack);
+                        if (protection > bestProtection) {
+                            bestProtection = protection;
+                            bestArmorSlot = i;
+                        }
+                    }
+                }
+            }
+
+            if (bestArmorSlot >= 0) {
+                ItemStack betterArmor = inventory.get(bestArmorSlot);
+                if (!currentArmor.isEmpty()) {
+                    inventory.set(bestArmorSlot, currentArmor);
+                } else {
+                    inventory.set(bestArmorSlot, ItemStack.EMPTY);
+                }
+                setItemSlot(slot, betterArmor);
+                Player2NPC.LOGGER.info("[{}] Equipped better armor: {}", getCompanionName(), betterArmor.getItem().getDescription().getString());
+
+                Player owner = getOwner();
+                if (owner != null) {
+                    owner.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                            "[" + getCompanionName() + "] *equips " + betterArmor.getItem().getDescription().getString() + "*"
+                    ));
+                }
+            }
+        }
+    }
+
+    private float getItemDamage(ItemStack stack) {
+        if (stack.isEmpty()) return 0;
+        Item item = stack.getItem();
+        if (item instanceof SwordItem sword) {
+            return sword.getDamage(stack);
+        } else if (item instanceof AxeItem axe) {
+            return axe.getDamage(stack);
+        }
+        return 0;
+    }
+
+    private float getArmorProtection(ItemStack stack) {
+        if (stack.isEmpty()) return 0;
+        if (stack.getItem() instanceof ArmorItem armor) {
+            return armor.getDefense();
+        }
+        return 0;
     }
 
     @Override
@@ -368,16 +483,16 @@ public class CompanionEntity extends PathfinderMob implements Container {
     }
 
     // Process chat message with explicit owner flag
-    public void onChatMessage(Player sender, String message, boolean isOwner) {
+    public void onChatMessage(Player sender, String message, boolean hasCommandAccess) {
         if (aiController != null) {
-            Player2NPC.LOGGER.info("[{}] Processing message from {} (owner={}): {}",
-                    getCompanionName(), sender.getName().getString(), isOwner, message);
+            Player2NPC.LOGGER.info("[{}] Processing message from {} (commandAccess={}): {}",
+                    getCompanionName(), sender.getName().getString(), hasCommandAccess, message);
 
-            if (isOwner) {
-                // Owner can give any command
-                aiController.processMessage(message);
+            if (hasCommandAccess) {
+                // Owner or teammate can give commands - pass the sender so follow works correctly
+                aiController.processMessage(message, sender);
             } else {
-                // Non-owner can interact but with limited commands
+                // Non-owner/non-teammate can chat but not command
                 aiController.processMessageFromStranger(sender, message);
             }
         }

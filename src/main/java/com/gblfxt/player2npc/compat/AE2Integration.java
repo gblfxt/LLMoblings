@@ -78,42 +78,95 @@ public class AE2Integration {
 
     /**
      * Get priority of ME access point.
-     * Returns: 1 = terminal (best), 2 = interface/chest, 0 = not an access point
+     * Returns: 1 = terminal (best), 2 = interface/chest/cable, 0 = not an access point
      */
     private static int getMEAccessPriority(BlockEntity be) {
         String className = be.getClass().getName().toLowerCase();
+        String simpleName = be.getClass().getSimpleName();
 
-        if (!className.contains("appeng")) {
+        if (!className.contains("appeng") && !className.contains("ae2")) {
             return 0;
         }
 
-        // Priority 1: Actual terminals players use
-        if (className.contains("terminal") || className.contains("craftingmonitor")) {
-            // Exclude part-based terminals that might not be accessible
-            // Actually include them - terminals are the best access points
-            Player2NPC.LOGGER.debug("AE2: Found terminal: {}", be.getClass().getSimpleName());
-            return 1;
+        // Skip import/export buses - they're one-way and not good for retrieval
+        // But DON'T skip CableBusBlockEntity - that's where terminals live!
+        if ((className.contains("import") || className.contains("export")) &&
+            !className.contains("cablebus")) {
+            Player2NPC.LOGGER.debug("AE2: Skipping import/export: {}", simpleName);
+            return 0;
         }
 
-        // Priority 2: ME Chests, Drives, Interfaces (can access grid but less ideal)
-        if (className.contains("chest") || className.contains("drive")) {
-            Player2NPC.LOGGER.debug("AE2: Found chest/drive: {}", be.getClass().getSimpleName());
+        // Priority 1: CableBusBlockEntity - this is where terminals, panels, etc. are attached
+        // In AE2, terminals are "parts" attached to cable buses, not standalone blocks
+        if (className.contains("cablebus")) {
+            // Check if this cable has a terminal part attached
+            if (hasTerminalPart(be)) {
+                Player2NPC.LOGGER.info("AE2: Found TERMINAL (cable with terminal part): {}", simpleName);
+                return 1;
+            }
+            // Even without terminal, cable buses can access the grid
+            Player2NPC.LOGGER.debug("AE2: Found cable bus (no terminal): {}", simpleName);
             return 2;
         }
 
-        // Skip buses - they don't provide good grid access for item retrieval
-        if (className.contains("bus") || className.contains("import") || className.contains("export")) {
-            Player2NPC.LOGGER.debug("AE2: Skipping bus: {}", be.getClass().getSimpleName());
-            return 0;
+        // Priority 1: Standalone terminals (if any mod adds them)
+        if (className.contains("terminal") || className.contains("craftingmonitor")) {
+            Player2NPC.LOGGER.info("AE2: Found TERMINAL: {}", simpleName);
+            return 1;
+        }
+
+        // Priority 2: ME Chests, Drives (can access grid)
+        if (className.contains("mechest") || className.contains("mchest") ||
+            className.contains("chest") || className.contains("drive")) {
+            Player2NPC.LOGGER.info("AE2: Found chest/drive: {}", simpleName);
+            return 2;
         }
 
         // Priority 2: Generic interface
         if (className.contains("interface") || className.contains("pattern")) {
-            Player2NPC.LOGGER.debug("AE2: Found interface/pattern: {}", be.getClass().getSimpleName());
+            Player2NPC.LOGGER.info("AE2: Found interface/pattern: {}", simpleName);
             return 2;
         }
 
         return 0;
+    }
+
+    /**
+     * Check if a CableBusBlockEntity has a terminal part attached.
+     */
+    private static boolean hasTerminalPart(BlockEntity be) {
+        try {
+            // Try to get the cable bus and check its parts
+            var getPart = be.getClass().getMethod("getPart", Class.forName("net.minecraft.core.Direction"));
+
+            // Check all 6 sides + center (null)
+            Object[] directions = new Object[]{null};  // Start with center/no direction
+            try {
+                Class<?> directionClass = Class.forName("net.minecraft.core.Direction");
+                Object[] enumValues = directionClass.getEnumConstants();
+                directions = new Object[enumValues.length + 1];
+                directions[0] = null;
+                System.arraycopy(enumValues, 0, directions, 1, enumValues.length);
+            } catch (Exception ignored) {}
+
+            for (Object dir : directions) {
+                try {
+                    Object part = getPart.invoke(be, dir);
+                    if (part != null) {
+                        String partClass = part.getClass().getName().toLowerCase();
+                        if (partClass.contains("terminal") || partClass.contains("monitor") ||
+                            partClass.contains("panel")) {
+                            Player2NPC.LOGGER.info("AE2: Found terminal part: {} on side {}",
+                                    part.getClass().getSimpleName(), dir);
+                            return true;
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception e) {
+            Player2NPC.LOGGER.debug("AE2: Could not check for terminal parts: {}", e.getMessage());
+        }
+        return false;
     }
 
     /**
@@ -200,15 +253,33 @@ public class AE2Integration {
 
     private static Object getGridFromBlockEntity(BlockEntity be) {
         try {
+            Player2NPC.LOGGER.info("AE2: Trying to get grid from: {}", be.getClass().getSimpleName());
+
+            // List all methods for debugging
+            StringBuilder methodsList = new StringBuilder();
+            for (var method : be.getClass().getMethods()) {
+                if (method.getName().toLowerCase().contains("grid") ||
+                    method.getName().toLowerCase().contains("node") ||
+                    method.getName().toLowerCase().contains("network")) {
+                    methodsList.append(method.getName()).append("(), ");
+                }
+            }
+            if (methodsList.length() > 0) {
+                Player2NPC.LOGGER.info("AE2: Available methods: {}", methodsList);
+            }
+
             // Try to get IGridNode from the block entity
             for (var method : be.getClass().getMethods()) {
                 if (method.getName().equals("getGridNode") || method.getName().equals("getMainNode")) {
                     method.setAccessible(true);
                     Object node = method.invoke(be, (Object[]) null);
+                    Player2NPC.LOGGER.info("AE2: {} returned: {}", method.getName(), node);
                     if (node != null) {
                         // Get grid from node
                         var getGridMethod = node.getClass().getMethod("getGrid");
-                        return getGridMethod.invoke(node);
+                        Object grid = getGridMethod.invoke(node);
+                        Player2NPC.LOGGER.info("AE2: Got grid from node: {}", grid);
+                        return grid;
                     }
                 }
             }
@@ -217,21 +288,29 @@ public class AE2Integration {
             for (var method : be.getClass().getMethods()) {
                 if (method.getName().equals("getGrid")) {
                     method.setAccessible(true);
-                    return method.invoke(be);
+                    Object grid = method.invoke(be);
+                    Player2NPC.LOGGER.info("AE2: Direct getGrid() returned: {}", grid);
+                    return grid;
                 }
             }
+
+            Player2NPC.LOGGER.info("AE2: No grid access method found on {}", be.getClass().getSimpleName());
         } catch (Exception e) {
-            Player2NPC.LOGGER.trace("Could not get grid from {}: {}", be.getClass().getSimpleName(), e.getMessage());
+            Player2NPC.LOGGER.warn("AE2: Error getting grid from {}: {}", be.getClass().getSimpleName(), e.getMessage());
         }
         return null;
     }
 
     private static Object getStorageService(Object grid) {
         try {
+            Player2NPC.LOGGER.info("AE2: Getting storage service from grid: {}", grid);
+
             // IGrid.getStorageService() or getService(IStorageService.class)
             for (var method : grid.getClass().getMethods()) {
                 if (method.getName().equals("getStorageService")) {
-                    return method.invoke(grid);
+                    Object result = method.invoke(grid);
+                    Player2NPC.LOGGER.info("AE2: getStorageService() returned: {}", result);
+                    return result;
                 }
             }
 
@@ -240,24 +319,34 @@ public class AE2Integration {
                 if (method.getName().equals("getService") && method.getParameterCount() == 1) {
                     // Find IStorageService class
                     Class<?> storageServiceClass = Class.forName("appeng.api.networking.storage.IStorageService");
-                    return method.invoke(grid, storageServiceClass);
+                    Object result = method.invoke(grid, storageServiceClass);
+                    Player2NPC.LOGGER.info("AE2: getService(IStorageService) returned: {}", result);
+                    return result;
                 }
             }
+
+            Player2NPC.LOGGER.warn("AE2: No storage service method found on grid");
         } catch (Exception e) {
-            Player2NPC.LOGGER.trace("Could not get storage service: {}", e.getMessage());
+            Player2NPC.LOGGER.warn("AE2: Could not get storage service: {}", e.getMessage());
         }
         return null;
     }
 
     private static Object getInventory(Object storageService) {
         try {
+            Player2NPC.LOGGER.info("AE2: Getting inventory from storage service: {}", storageService);
+
             for (var method : storageService.getClass().getMethods()) {
                 if (method.getName().equals("getInventory") && method.getParameterCount() == 0) {
-                    return method.invoke(storageService);
+                    Object result = method.invoke(storageService);
+                    Player2NPC.LOGGER.info("AE2: getInventory() returned: {}", result);
+                    return result;
                 }
             }
+
+            Player2NPC.LOGGER.warn("AE2: No getInventory method found");
         } catch (Exception e) {
-            Player2NPC.LOGGER.trace("Could not get inventory: {}", e.getMessage());
+            Player2NPC.LOGGER.warn("AE2: Could not get inventory: {}", e.getMessage());
         }
         return null;
     }
@@ -268,26 +357,34 @@ public class AE2Integration {
         List<ItemStack> extracted = new ArrayList<>();
 
         try {
+            Player2NPC.LOGGER.info("AE2: Scanning ME inventory for items...");
+
             // Get available stacks via getAvailableStacks()
             var getStacksMethod = inventory.getClass().getMethod("getAvailableStacks");
             Object keyCounter = getStacksMethod.invoke(inventory);
 
-            if (keyCounter == null) return extracted;
+            if (keyCounter == null) {
+                Player2NPC.LOGGER.warn("AE2: getAvailableStacks() returned null");
+                return extracted;
+            }
+
+            Player2NPC.LOGGER.info("AE2: Got key counter: {}", keyCounter.getClass().getSimpleName());
 
             // Iterate through available items
-            // This is complex because AE2 uses AEKey system, not direct ItemStacks
-            // For simplicity, we'll try to get the item representation
-
             var iteratorMethod = keyCounter.getClass().getMethod("iterator");
             var iterator = iteratorMethod.invoke(keyCounter);
 
             int extractedCount = 0;
+            int totalItemsScanned = 0;
+            int matchingItems = 0;
+
             while (extractedCount < maxCount) {
                 var hasNextMethod = iterator.getClass().getMethod("hasNext");
                 if (!(boolean) hasNextMethod.invoke(iterator)) break;
 
                 var nextMethod = iterator.getClass().getMethod("next");
                 Object entry = nextMethod.invoke(iterator);
+                totalItemsScanned++;
 
                 // Get the key and amount
                 var getKeyMethod = entry.getClass().getMethod("getKey");
@@ -299,9 +396,12 @@ public class AE2Integration {
                     ItemStack stack = (ItemStack) toStackMethod.invoke(key);
 
                     if (!stack.isEmpty() && filter.test(stack)) {
+                        matchingItems++;
                         // Try to extract
                         var getLongValueMethod = entry.getClass().getMethod("getLongValue");
                         long available = (long) getLongValueMethod.invoke(entry);
+
+                        Player2NPC.LOGGER.info("AE2: Found matching item: {} x{}", stack.getItem(), available);
 
                         int toExtract = (int) Math.min(available, Math.min(stack.getMaxStackSize(), maxCount - extractedCount));
 
@@ -310,13 +410,20 @@ public class AE2Integration {
                         if (!extractedStack.isEmpty()) {
                             extracted.add(extractedStack);
                             extractedCount += extractedStack.getCount();
+                            Player2NPC.LOGGER.info("AE2: Extracted {} x{}", extractedStack.getItem(), extractedStack.getCount());
+                        } else {
+                            Player2NPC.LOGGER.warn("AE2: extractFromNetwork returned empty for {}", stack.getItem());
                         }
                     }
                 }
             }
 
+            Player2NPC.LOGGER.info("AE2: Scanned {} items, {} matched filter, {} extracted",
+                    totalItemsScanned, matchingItems, extractedCount);
+
         } catch (Exception e) {
-            Player2NPC.LOGGER.debug("Error extracting items: {}", e.getMessage());
+            Player2NPC.LOGGER.warn("AE2: Error extracting items: {}", e.getMessage());
+            e.printStackTrace();
         }
 
         return extracted;

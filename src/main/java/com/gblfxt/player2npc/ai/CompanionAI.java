@@ -44,6 +44,9 @@ public class CompanionAI {
     private BlockPos homePos = null;
     private BlockPos bedPos = null;
 
+    // Track who gave the last command (for follow, etc.)
+    private Player commandGiver = null;
+
     public CompanionAI(CompanionEntity companion) {
         this.companion = companion;
         this.ollamaClient = new OllamaClient(companion.getCompanionName());
@@ -81,19 +84,27 @@ public class CompanionAI {
     }
 
     public void processMessage(String message) {
+        processMessage(message, companion.getOwner());
+    }
+
+    public void processMessage(String message, Player sender) {
         if (pendingAction != null && !pendingAction.isDone()) {
             // Already processing a message, queue or ignore
-            sendMessage("I'm still thinking about your last request...");
+            sendMessageTo(sender, "I'm still thinking about your last request...");
             return;
         }
 
-        Player2NPC.LOGGER.info("[{}] Processing owner message: {}", companion.getCompanionName(), message);
-        sendMessage("Thinking...");
+        // Track who gave the command
+        this.commandGiver = sender;
+
+        Player2NPC.LOGGER.info("[{}] Processing message from {}: {}", companion.getCompanionName(),
+                sender != null ? sender.getName().getString() : "unknown", message);
+        sendMessageToAll("Thinking...");
         pendingAction = ollamaClient.chat(message);
     }
 
     /**
-     * Process a message from someone who is not the owner.
+     * Process a message from someone who is not the owner (and not a teammate).
      * They can chat but not give commands.
      */
     public void processMessageFromStranger(Player stranger, String message) {
@@ -109,7 +120,7 @@ public class CompanionAI {
         String contextMessage = "[A player named " + stranger.getName().getString() +
                 " (not my owner) says: " + message + ". I should be friendly but I only take commands from my owner.]";
 
-        sendMessageTo(stranger, "Hmm?");
+        sendMessageToAll("Hmm?");
         pendingAction = ollamaClient.chat(contextMessage);
     }
 
@@ -174,6 +185,12 @@ public class CompanionAI {
             case "sethome" -> setHomeHere();
             case "home" -> goHome();
             case "sleep" -> tryToSleep();
+            case "tpa" -> {
+                String target = action.getString("target", action.getString("player", ""));
+                requestTeleport(target);
+            }
+            case "tpaccept" -> acceptTeleport();
+            case "tpdeny" -> denyTeleport();
             default -> {
                 Player2NPC.LOGGER.warn("[{}] Unknown action: {}", companion.getCompanionName(), action.getAction());
                 currentState = AIState.IDLE;
@@ -183,18 +200,19 @@ public class CompanionAI {
 
     // State behaviors
     private void tickFollow() {
-        Player owner = companion.getOwner();
-        if (owner == null) {
+        // Follow whoever gave the command, or owner if no one specified
+        Player followTarget = (commandGiver != null && commandGiver.isAlive()) ? commandGiver : companion.getOwner();
+        if (followTarget == null) {
             currentState = AIState.IDLE;
             return;
         }
 
-        double distance = companion.distanceTo(owner);
+        double distance = companion.distanceTo(followTarget);
         double followDist = Config.COMPANION_FOLLOW_DISTANCE.get();
 
         if (distance > followDist) {
-            // Move towards owner
-            companion.getNavigation().moveTo(owner, 1.0);
+            // Move towards target
+            companion.getNavigation().moveTo(followTarget, 1.0);
         } else if (distance < followDist - 1) {
             // Close enough, stop
             companion.getNavigation().stop();
@@ -202,8 +220,8 @@ public class CompanionAI {
 
         // Teleport if too far
         if (distance > 32) {
-            Vec3 ownerPos = owner.position();
-            companion.teleportTo(ownerPos.x, ownerPos.y, ownerPos.z);
+            Vec3 targetPos = followTarget.position();
+            companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
         }
     }
 
@@ -461,11 +479,61 @@ public class CompanionAI {
     }
 
     private void giveItems(String itemName, int count) {
-        Player owner = companion.getOwner();
-        if (owner == null) return;
+        // Give to whoever gave the command, not just owner
+        Player target = (commandGiver != null && commandGiver.isAlive()) ? commandGiver : companion.getOwner();
+        if (target == null) {
+            sendMessage("I don't see anyone to give items to!");
+            return;
+        }
 
-        // TODO: Find matching items in inventory and give to owner
-        sendMessage("I would give you " + count + " " + itemName + " but inventory transfer isn't implemented yet.");
+        String searchName = itemName.toLowerCase().replace(" ", "_");
+        int givenCount = 0;
+
+        for (int i = 0; i < companion.getContainerSize() && givenCount < count; i++) {
+            net.minecraft.world.item.ItemStack stack = companion.getItem(i);
+            if (stack.isEmpty()) continue;
+
+            // Check if item matches the search term
+            String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath().toLowerCase();
+            String itemDesc = stack.getItem().getDescription().getString().toLowerCase();
+
+            if (itemId.contains(searchName) || itemDesc.contains(searchName) || searchName.isEmpty()) {
+                int toGive = Math.min(stack.getCount(), count - givenCount);
+
+                // Create stack to give
+                net.minecraft.world.item.ItemStack giveStack = stack.copy();
+                giveStack.setCount(toGive);
+
+                // Try to add to player inventory
+                if (target.getInventory().add(giveStack)) {
+                    stack.shrink(toGive);
+                    if (stack.isEmpty()) {
+                        companion.setItem(i, net.minecraft.world.item.ItemStack.EMPTY);
+                    }
+                    givenCount += toGive;
+                    Player2NPC.LOGGER.info("[{}] Gave {} x{} to {}",
+                            companion.getCompanionName(), giveStack.getItem().getDescription().getString(),
+                            toGive, target.getName().getString());
+                } else {
+                    // Player inventory full, drop at their feet
+                    target.drop(giveStack, false);
+                    stack.shrink(toGive);
+                    if (stack.isEmpty()) {
+                        companion.setItem(i, net.minecraft.world.item.ItemStack.EMPTY);
+                    }
+                    givenCount += toGive;
+                    sendMessage("Your inventory is full, I dropped the items at your feet.");
+                }
+            }
+        }
+
+        if (givenCount > 0) {
+            sendMessage("Here you go! Gave you " + givenCount + " " + itemName + ".");
+        } else if (itemName.isEmpty()) {
+            sendMessage("What item would you like me to give you?");
+        } else {
+            sendMessage("I don't have any " + itemName + " in my inventory.");
+        }
     }
 
     private void reportStatus() {
@@ -593,12 +661,94 @@ public class CompanionAI {
         }
     }
 
-    private void sendMessage(String message) {
-        Player owner = companion.getOwner();
-        if (owner != null && Config.BROADCAST_COMPANION_CHAT.get()) {
-            String formatted = "[" + companion.getCompanionName() + "] " + message;
-            owner.sendSystemMessage(Component.literal(formatted));
+    private void requestTeleport(String targetPlayer) {
+        if (targetPlayer == null || targetPlayer.isEmpty()) {
+            sendMessage("Who should I teleport to? Tell me their name.");
+            return;
         }
+
+        if (companion.level() instanceof ServerLevel serverLevel) {
+            try {
+                String command = "tpa " + targetPlayer;
+                serverLevel.getServer().getCommands().performPrefixedCommand(
+                        serverLevel.getServer().createCommandSourceStack()
+                                .withEntity(companion)
+                                .withPosition(companion.position())
+                                .withPermission(2),
+                        command
+                );
+                sendMessage("Sent teleport request to " + targetPlayer + "!");
+                Player2NPC.LOGGER.info("[{}] Sent TPA request to {}", companion.getCompanionName(), targetPlayer);
+            } catch (Exception e) {
+                sendMessage("I couldn't send the teleport request. The server might not support this command.");
+                Player2NPC.LOGGER.warn("[{}] TPA command failed: {}", companion.getCompanionName(), e.getMessage());
+            }
+        }
+    }
+
+    private void acceptTeleport() {
+        if (companion.level() instanceof ServerLevel serverLevel) {
+            try {
+                serverLevel.getServer().getCommands().performPrefixedCommand(
+                        serverLevel.getServer().createCommandSourceStack()
+                                .withEntity(companion)
+                                .withPosition(companion.position())
+                                .withPermission(2),
+                        "tpaccept"
+                );
+                sendMessage("Accepted the teleport request!");
+                Player2NPC.LOGGER.info("[{}] Accepted TPA request", companion.getCompanionName());
+            } catch (Exception e) {
+                sendMessage("I couldn't accept the teleport request.");
+                Player2NPC.LOGGER.warn("[{}] TPAccept command failed: {}", companion.getCompanionName(), e.getMessage());
+            }
+        }
+    }
+
+    private void denyTeleport() {
+        if (companion.level() instanceof ServerLevel serverLevel) {
+            try {
+                serverLevel.getServer().getCommands().performPrefixedCommand(
+                        serverLevel.getServer().createCommandSourceStack()
+                                .withEntity(companion)
+                                .withPosition(companion.position())
+                                .withPermission(2),
+                        "tpdeny"
+                );
+                sendMessage("Denied the teleport request.");
+                Player2NPC.LOGGER.info("[{}] Denied TPA request", companion.getCompanionName());
+            } catch (Exception e) {
+                sendMessage("I couldn't deny the teleport request.");
+                Player2NPC.LOGGER.warn("[{}] TPDeny command failed: {}", companion.getCompanionName(), e.getMessage());
+            }
+        }
+    }
+
+    private void sendMessage(String message) {
+        sendMessageToAll(message);
+    }
+
+    /**
+     * Send message to all nearby players.
+     */
+    private void sendMessageToAll(String message) {
+        if (!Config.BROADCAST_COMPANION_CHAT.get()) return;
+
+        String formatted = "[" + companion.getCompanionName() + "] " + message;
+        Component component = Component.literal(formatted);
+
+        // Send to all players within 64 blocks
+        List<Player> nearbyPlayers = companion.level().getEntitiesOfClass(
+                Player.class,
+                companion.getBoundingBox().inflate(64),
+                Player::isAlive
+        );
+
+        for (Player player : nearbyPlayers) {
+            player.sendSystemMessage(component);
+        }
+
+        Player2NPC.LOGGER.debug("[{}] Broadcast to {} players: {}", companion.getCompanionName(), nearbyPlayers.size(), message);
     }
 
     public AIState getCurrentState() {

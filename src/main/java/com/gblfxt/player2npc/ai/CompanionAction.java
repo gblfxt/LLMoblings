@@ -53,6 +53,14 @@ public class CompanionAction {
         return data.has(key);
     }
 
+    public void setParameter(String key, String value) {
+        data.addProperty(key, value);
+    }
+
+    public void setParameter(String key, int value) {
+        data.addProperty(key, value);
+    }
+
     @Override
     public String toString() {
         return "CompanionAction{action='" + action + "', message='" + message + "', data=" + data + "}";

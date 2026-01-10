@@ -97,6 +97,11 @@ HOME/BED:
 - {"action": "home"} - Teleport to home location (uses /home command)
 - {"action": "sleep"} - Try to sleep in nearest bed
 
+TELEPORT:
+- {"action": "tpa", "target": "playername"} - Request to teleport to a player
+- {"action": "tpaccept"} - Accept an incoming teleport request
+- {"action": "tpdeny"} - Deny an incoming teleport request
+
 RULES:
 1. ONLY output JSON. Never output plain text.
 2. Every response MUST be a JSON object with "action" field
@@ -294,6 +299,29 @@ User: "follow" -> {"action": "follow", "message": "Following you!"}
         }
         if (lower.contains("status") || lower.contains("health") || lower.contains("inventory")) {
             return new CompanionAction("status", text);
+        }
+        if (lower.contains("tpaccept") || lower.contains("tp accept") || lower.contains("accept teleport") || lower.contains("accept tp")) {
+            return new CompanionAction("tpaccept", text);
+        }
+        if (lower.contains("tpdeny") || lower.contains("tp deny") || lower.contains("deny teleport") || lower.contains("deny tp")) {
+            return new CompanionAction("tpdeny", text);
+        }
+        if (lower.contains("tpa ") || lower.contains("teleport to ") || lower.contains("tp to ")) {
+            // Try to extract player name
+            String target = "";
+            if (lower.contains("tpa ")) {
+                int idx = lower.indexOf("tpa ") + 4;
+                target = text.substring(idx).trim().split("\\s+")[0];
+            } else if (lower.contains("teleport to ")) {
+                int idx = lower.indexOf("teleport to ") + 12;
+                target = text.substring(idx).trim().split("\\s+")[0];
+            } else if (lower.contains("tp to ")) {
+                int idx = lower.indexOf("tp to ") + 6;
+                target = text.substring(idx).trim().split("\\s+")[0];
+            }
+            CompanionAction action = new CompanionAction("tpa", text);
+            action.setParameter("target", target);
+            return action;
         }
 
         // Default to idle with the response as message

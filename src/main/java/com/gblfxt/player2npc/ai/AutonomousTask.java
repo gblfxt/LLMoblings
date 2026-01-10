@@ -462,12 +462,23 @@ public class AutonomousTask {
     private net.minecraft.world.entity.Entity findHuntTarget() {
         AABB searchBox = companion.getBoundingBox().inflate(baseRadius);
 
-        // Look for passive mobs
+        // Look for passive mobs - exclude pets and Cobblemon Pokemon
         List<Animal> animals = companion.level().getEntitiesOfClass(Animal.class, searchBox,
-                animal -> animal.isAlive() &&
-                        !(animal instanceof Wolf) &&  // Don't hunt wolves
-                        !(animal instanceof Cat) &&   // Don't hunt cats
-                        !(animal instanceof Parrot)   // Don't hunt parrots
+                animal -> {
+                    if (!animal.isAlive()) return false;
+                    if (animal instanceof Wolf) return false;  // Don't hunt wolves
+                    if (animal instanceof Cat) return false;   // Don't hunt cats
+                    if (animal instanceof Parrot) return false; // Don't hunt parrots
+
+                    // Exclude Cobblemon Pokemon
+                    String className = animal.getClass().getName().toLowerCase();
+                    if (className.contains("cobblemon") || className.contains("pokemon")) {
+                        Player2NPC.LOGGER.debug("Skipping Cobblemon entity: {}", animal.getClass().getSimpleName());
+                        return false;
+                    }
+
+                    return true;
+                }
         );
 
         return animals.stream()
