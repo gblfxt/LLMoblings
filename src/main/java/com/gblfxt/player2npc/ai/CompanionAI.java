@@ -163,7 +163,7 @@ public class CompanionAI {
                 int radius = action.getInt("radius", 32);
                 startExploring(radius);
             }
-            case "autonomous", "independent", "survive" -> {
+            case "auto", "autonomous", "independent", "survive" -> {
                 int radius = action.getInt("radius", 32);
                 startAutonomous(radius);
             }

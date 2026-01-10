@@ -86,7 +86,7 @@ INTERACTION:
 UTILITY:
 - {"action": "status"} - Report health, hunger, inventory summary
 - {"action": "scan", "radius": 32} - Scan for resources/mobs nearby
-- {"action": "autonomous", "radius": 32} - Go fully independent: assess base, hunt, equip, patrol
+- {"action": "auto", "radius": 32} - Go fully independent: assess base, hunt, equip, patrol
 - {"action": "idle"} - Do nothing, just chat
 
 HOME/BED:
