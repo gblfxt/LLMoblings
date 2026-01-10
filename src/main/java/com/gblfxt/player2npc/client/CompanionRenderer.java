@@ -13,10 +13,6 @@ import net.minecraft.resources.ResourceLocation;
 
 public class CompanionRenderer extends HumanoidMobRenderer<CompanionEntity, CompanionModel> {
 
-    // Fallback to Steve texture until dynamic skin loading is implemented
-    private static final ResourceLocation STEVE_TEXTURE =
-            ResourceLocation.withDefaultNamespace("textures/entity/player/wide/steve.png");
-
     public CompanionRenderer(EntityRendererProvider.Context context) {
         super(context, new CompanionModel(context.bakeLayer(CompanionModel.LAYER_LOCATION)), 0.5F);
 
@@ -34,9 +30,8 @@ public class CompanionRenderer extends HumanoidMobRenderer<CompanionEntity, Comp
 
     @Override
     public ResourceLocation getTextureLocation(CompanionEntity entity) {
-        // TODO: Implement dynamic skin loading from URL
-        // For now, use Steve texture
-        return STEVE_TEXTURE;
+        // Get skin based on companion name (deterministic - same name = same skin)
+        return SkinManager.getSkinForName(entity.getCompanionName());
     }
 
     @Override
