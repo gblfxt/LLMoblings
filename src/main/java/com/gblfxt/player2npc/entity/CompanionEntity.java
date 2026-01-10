@@ -114,7 +114,7 @@ public class CompanionEntity extends PathfinderMob implements Container {
         }
     }
 
-    private ItemStack addToInventory(ItemStack stack) {
+    public ItemStack addToInventory(ItemStack stack) {
         // Try to stack with existing items first
         for (int i = 0; i < inventory.size(); i++) {
             ItemStack slot = inventory.get(i);

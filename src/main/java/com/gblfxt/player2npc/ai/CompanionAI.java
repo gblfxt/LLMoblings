@@ -30,9 +30,7 @@ public class CompanionAI {
     // Task-specific data
     private BlockPos targetPos = null;
     private Entity targetEntity = null;
-    private String targetBlockType = null;
-    private int targetCount = 0;
-    private int collectedCount = 0;
+    private MiningTask miningTask = null;
 
     public CompanionAI(CompanionEntity companion) {
         this.companion = companion;
@@ -166,17 +164,34 @@ public class CompanionAI {
     }
 
     private void tickMining() {
-        // Simplified mining - in production, integrate with Baritone
-        if (collectedCount >= targetCount) {
-            sendMessage("Done! I gathered " + collectedCount + " " + targetBlockType);
+        if (miningTask == null) {
             currentState = AIState.IDLE;
             return;
         }
 
-        // TODO: Implement actual mining with Baritone
-        // For now, just report that mining is not yet implemented
+        // Tick the mining task
+        miningTask.tick();
+
+        // Check for completion
+        if (miningTask.isCompleted()) {
+            sendMessage("Done! I gathered " + miningTask.getMinedCount() + " " + miningTask.getTargetBlockName() + ".");
+            miningTask = null;
+            currentState = AIState.IDLE;
+            return;
+        }
+
+        // Check for failure
+        if (miningTask.isFailed()) {
+            sendMessage(miningTask.getFailReason());
+            miningTask = null;
+            currentState = AIState.IDLE;
+            return;
+        }
+
+        // Progress report every 5 seconds
         if (companion.tickCount % 100 == 0) {
-            sendMessage("Mining in progress... (" + collectedCount + "/" + targetCount + ")");
+            sendMessage("Mining " + miningTask.getTargetBlockName() + "... (" +
+                miningTask.getMinedCount() + "/" + miningTask.getTargetCount() + ")");
         }
     }
 
@@ -260,11 +275,16 @@ public class CompanionAI {
     }
 
     private void startMining(String blockType, int count) {
-        targetBlockType = blockType;
-        targetCount = count;
-        collectedCount = 0;
+        miningTask = new MiningTask(companion, blockType, count, 32);
+
+        if (miningTask.isFailed()) {
+            sendMessage(miningTask.getFailReason());
+            miningTask = null;
+            return;
+        }
+
         currentState = AIState.MINING;
-        sendMessage("Starting to gather " + count + " " + blockType);
+        sendMessage("Starting to gather " + count + " " + blockType + ". I'll search within 32 blocks.");
     }
 
     private void startAttacking(String targetType) {

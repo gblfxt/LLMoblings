@@ -12,7 +12,8 @@ public class NetworkHandler {
     }
 
     public static void registerPayloads(final RegisterPayloadHandlersEvent event) {
-        final PayloadRegistrar registrar = event.registrar(Player2NPC.MOD_ID);
+        // Use optional() so clients without the mod can still connect
+        final PayloadRegistrar registrar = event.registrar(Player2NPC.MOD_ID).optional();
 
         // Register spawn companion packet (C2S)
         registrar.playToServer(

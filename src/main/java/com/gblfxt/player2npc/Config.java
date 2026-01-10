@@ -35,8 +35,8 @@ public class Config {
                 .defineInRange("port", 11434, 1, 65535);
 
         OLLAMA_MODEL = BUILDER
-                .comment("Ollama model to use (e.g., llama3.2, mistral, codellama)")
-                .define("model", "llama3.2");
+                .comment("Ollama model to use (e.g., llama3:8b, mistral:7b, gemma:2b)")
+                .define("model", "llama3:8b");
 
         OLLAMA_TIMEOUT = BUILDER
                 .comment("Request timeout in seconds")

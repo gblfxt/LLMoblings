@@ -5,17 +5,19 @@ import com.gblfxt.player2npc.Player2NPC;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import okhttp3.*;
 
-import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 public class OllamaClient {
     private static final Gson GSON = new Gson();
-    private static volatile OkHttpClient httpClient;
+    private static volatile HttpClient httpClient;
     private static final Object HTTP_CLIENT_LOCK = new Object();
 
     private final List<ChatMessage> conversationHistory = new ArrayList<>();
@@ -25,15 +27,13 @@ public class OllamaClient {
         this.systemPrompt = buildSystemPrompt(companionName);
     }
 
-    private static OkHttpClient getHttpClient() {
+    private static HttpClient getHttpClient() {
         if (httpClient == null) {
             synchronized (HTTP_CLIENT_LOCK) {
                 if (httpClient == null) {
                     int timeout = Config.OLLAMA_TIMEOUT.get();
-                    httpClient = new OkHttpClient.Builder()
-                            .connectTimeout(timeout, TimeUnit.SECONDS)
-                            .readTimeout(timeout, TimeUnit.SECONDS)
-                            .writeTimeout(timeout, TimeUnit.SECONDS)
+                    httpClient = HttpClient.newBuilder()
+                            .connectTimeout(Duration.ofSeconds(timeout))
                             .build();
                 }
             }
@@ -47,10 +47,6 @@ public class OllamaClient {
      */
     public static void refreshHttpClient() {
         synchronized (HTTP_CLIENT_LOCK) {
-            if (httpClient != null) {
-                httpClient.dispatcher().executorService().shutdown();
-                httpClient.connectionPool().evictAll();
-            }
             httpClient = null;
         }
     }
@@ -132,7 +128,7 @@ Response: {"action": "attack", "target": "zombie", "message": "Fighting the zomb
         });
     }
 
-    private String sendChatRequest() throws IOException {
+    private String sendChatRequest() throws Exception {
         String host = Config.OLLAMA_HOST.get();
         int port = Config.OLLAMA_PORT.get();
         String model = Config.OLLAMA_MODEL.get();
@@ -170,30 +166,28 @@ Response: {"action": "attack", "target": "zombie", "message": "Fighting the zomb
         options.addProperty("num_predict", 256);
         requestBody.add("options", options);
 
-        RequestBody body = RequestBody.create(
-                GSON.toJson(requestBody),
-                MediaType.parse("application/json")
-        );
-
-        Request request = new Request.Builder()
-                .url(url)
-                .post(body)
+        int timeout = Config.OLLAMA_TIMEOUT.get();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(timeout))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(requestBody)))
                 .build();
 
-        try (Response response = getHttpClient().newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                throw new IOException("Ollama request failed: " + response.code());
-            }
+        HttpResponse<String> response = getHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
 
-            String responseBody = response.body() != null ? response.body().string() : "";
-            JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
-
-            if (json.has("message") && json.getAsJsonObject("message").has("content")) {
-                return json.getAsJsonObject("message").get("content").getAsString();
-            }
-
-            return "{\"action\": \"idle\", \"message\": \"I didn't get a proper response.\"}";
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Ollama request failed: " + response.statusCode() + " - " + response.body());
         }
+
+        String responseBody = response.body();
+        JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
+
+        if (json.has("message") && json.getAsJsonObject("message").has("content")) {
+            return json.getAsJsonObject("message").get("content").getAsString();
+        }
+
+        return "{\"action\": \"idle\", \"message\": \"I didn't get a proper response.\"}";
     }
 
     private CompanionAction parseResponse(String response) {
