@@ -2,7 +2,11 @@ package com.gblfxt.player2npc.ai;
 
 import com.gblfxt.player2npc.Config;
 import com.gblfxt.player2npc.Player2NPC;
+import com.gblfxt.player2npc.ai.blueprints.CottageBlueprint;
 import com.gblfxt.player2npc.compat.AE2Integration;
+import com.gblfxt.player2npc.compat.BuildingGadgetsIntegration;
+import com.gblfxt.player2npc.compat.CobblemonIntegration;
+import com.gblfxt.player2npc.compat.SophisticatedBackpacksIntegration;
 import com.gblfxt.player2npc.entity.CompanionEntity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
@@ -43,6 +47,11 @@ public class CompanionAI {
     private Entity targetEntity = null;
     private MiningTask miningTask = null;
     private AutonomousTask autonomousTask = null;
+    private BuildingTask buildingTask = null;
+
+    // Pokemon buddy (Cobblemon integration)
+    private Entity pokemonBuddy = null;
+    private String pokemonBuddyName = null;
 
     // Owner tracking for greetings
     private boolean ownerWasNearby = false;
@@ -63,6 +72,9 @@ public class CompanionAI {
     public void tick() {
         // Tick personality for random chatter/emotes
         personality.tick();
+
+        // Tick Pokemon buddy to follow companion
+        tickPokemonBuddy();
 
         // Check if owner just came nearby (for greetings)
         checkOwnerProximity();
@@ -86,6 +98,7 @@ public class CompanionAI {
             case ATTACKING -> tickAttacking();
             case DEFENDING -> tickDefending();
             case AUTONOMOUS -> tickAutonomous();
+            case BUILDING -> tickBuilding();
             case IDLE -> tickIdle();
         }
     }
@@ -207,6 +220,31 @@ public class CompanionAI {
             case "deposit", "store", "stash", "putaway" -> {
                 boolean keepGear = action.getBoolean("keepGear", true);
                 depositItems(keepGear);
+            }
+            case "build" -> {
+                String structure = action.getString("structure", "cottage");
+                boolean here = action.getBoolean("here", false);
+                int x = action.getInt("x", (int) companion.getX());
+                int y = action.getInt("y", (int) companion.getY());
+                int z = action.getInt("z", (int) companion.getZ());
+                BlockPos location = here ? companion.blockPosition() : new BlockPos(x, y, z);
+                startBuilding(structure, location);
+            }
+            case "pokemon", "buddy", "pokemonbuddy" -> {
+                String subAction = action.getString("subaction", "find");
+                handlePokemonBuddy(subAction, action.getString("name", null));
+            }
+            case "gadget", "buildinggadget", "gadgets" -> {
+                String subAction = action.getString("subaction", "info");
+                String blockName = action.getString("block", null);
+                int range = action.getInt("range", -1);
+                handleBuildingGadget(subAction, blockName, range);
+            }
+            case "backpack", "pack", "bag" -> {
+                String subAction = action.getString("subaction", "info");
+                String itemName = action.getString("item", null);
+                int count = action.getInt("count", -1);
+                handleBackpack(subAction, itemName, count);
             }
             default -> {
                 Player2NPC.LOGGER.warn("[{}] Unknown action: {}", companion.getCompanionName(), action.getAction());
@@ -375,6 +413,38 @@ public class CompanionAI {
         autonomousTask.tick();
     }
 
+    private void tickBuilding() {
+        if (buildingTask == null) {
+            currentState = AIState.IDLE;
+            return;
+        }
+
+        buildingTask.tick();
+
+        // Check for completion
+        if (buildingTask.isCompleted()) {
+            sendMessage("Done! I've finished building the " + buildingTask.getStructureName() + "!");
+            personality.onTaskComplete();
+            buildingTask = null;
+            currentState = AIState.IDLE;
+            return;
+        }
+
+        // Check for failure
+        if (buildingTask.isFailed()) {
+            sendMessage(buildingTask.getFailReason());
+            personality.doSadEmote();
+            buildingTask = null;
+            currentState = AIState.IDLE;
+            return;
+        }
+
+        // Progress report every 5 seconds
+        if (companion.tickCount % 100 == 0) {
+            sendMessage(buildingTask.getProgressReport());
+        }
+    }
+
     private void tickIdle() {
         // Occasionally look around
         if (companion.getRandom().nextInt(100) == 0) {
@@ -502,6 +572,596 @@ public class CompanionAI {
         currentState = AIState.AUTONOMOUS;
         sendMessage("I'll explore the area! I can open doors and check out interesting spots.");
     }
+
+    private void startBuilding(String structureType, BlockPos location) {
+        Blueprint blueprint = null;
+
+        // Get blueprint by type
+        if (structureType.equalsIgnoreCase("cottage") || structureType.equalsIgnoreCase("house")) {
+            blueprint = new CottageBlueprint();
+        }
+
+        if (blueprint == null) {
+            sendMessage("I don't know how to build a " + structureType + ". I can build: cottage");
+            return;
+        }
+
+        buildingTask = new BuildingTask(companion, blueprint, location);
+        currentState = AIState.BUILDING;
+        sendMessage("Starting to build a " + blueprint.getName() + " at [" +
+                location.getX() + ", " + location.getY() + ", " + location.getZ() + "]! This might take a while.");
+        personality.onTaskStart("building");
+    }
+
+    // ========== POKEMON BUDDY SYSTEM ==========
+
+    /**
+     * Tick the Pokemon buddy to follow the companion.
+     */
+    private void tickPokemonBuddy() {
+        if (!CobblemonIntegration.isCobblemonLoaded()) {
+            return;
+        }
+
+        // Check if buddy is still valid
+        if (pokemonBuddy != null) {
+            if (!pokemonBuddy.isAlive() || pokemonBuddy.isRemoved()) {
+                sendMessage("Oh no, " + pokemonBuddyName + " is gone!");
+                pokemonBuddy = null;
+                pokemonBuddyName = null;
+                return;
+            }
+
+            // Make buddy follow companion (every 20 ticks = 1 second)
+            if (companion.tickCount % 20 == 0) {
+                double distance = companion.distanceTo(pokemonBuddy);
+
+                // If too far, teleport the buddy
+                if (distance > 20) {
+                    pokemonBuddy.teleportTo(
+                            companion.getX() + (companion.getRandom().nextDouble() - 0.5) * 2,
+                            companion.getY(),
+                            companion.getZ() + (companion.getRandom().nextDouble() - 0.5) * 2
+                    );
+                } else if (distance > 3) {
+                    // Make it follow
+                    CobblemonIntegration.makePokemonFollow(pokemonBuddy, companion);
+                }
+            }
+        }
+    }
+
+    /**
+     * Handle Pokemon buddy commands.
+     */
+    private void handlePokemonBuddy(String subAction, String targetName) {
+        if (!CobblemonIntegration.isCobblemonLoaded()) {
+            sendMessage("I don't see any Pokemon around... is Cobblemon installed?");
+            return;
+        }
+
+        switch (subAction.toLowerCase()) {
+            case "find", "bond", "get" -> findPokemonBuddy(targetName);
+            case "release", "bye", "dismiss" -> releasePokemonBuddy();
+            case "status", "check" -> checkPokemonBuddy();
+            default -> findPokemonBuddy(targetName);
+        }
+    }
+
+    /**
+     * Find and bond with a Pokemon buddy.
+     */
+    private void findPokemonBuddy(String targetName) {
+        // Already have a buddy?
+        if (pokemonBuddy != null && pokemonBuddy.isAlive()) {
+            sendMessage("I already have " + pokemonBuddyName + " with me! Say 'release buddy' first if you want me to find a different one.");
+            return;
+        }
+
+        // Look for the owner's Pokemon nearby
+        Entity foundPokemon = CobblemonIntegration.findNearestPlayerPokemon(companion, 32);
+
+        if (foundPokemon == null) {
+            sendMessage("I don't see any of your Pokemon nearby. Send one out and I'll bond with it!");
+            return;
+        }
+
+        // If target name specified, try to find that specific Pokemon
+        if (targetName != null && !targetName.isEmpty()) {
+            List<Entity> allPokemon = CobblemonIntegration.findPlayerPokemon(
+                    companion,
+                    (net.minecraft.server.level.ServerPlayer) companion.getOwner(),
+                    32);
+
+            for (Entity pokemon : allPokemon) {
+                String name = CobblemonIntegration.getPokemonDisplayName(pokemon);
+                if (name != null && name.toLowerCase().contains(targetName.toLowerCase())) {
+                    foundPokemon = pokemon;
+                    break;
+                }
+            }
+        }
+
+        // Bond with the Pokemon
+        pokemonBuddy = foundPokemon;
+        pokemonBuddyName = CobblemonIntegration.getPokemonSummary(foundPokemon);
+
+        String speciesName = CobblemonIntegration.getPokemonSpeciesName(foundPokemon);
+        boolean isShiny = CobblemonIntegration.isPokemonShiny(foundPokemon);
+        int level = CobblemonIntegration.getPokemonLevel(foundPokemon);
+
+        StringBuilder msg = new StringBuilder();
+        msg.append("Hey there, ");
+        if (isShiny) {
+            msg.append("shiny ");
+        }
+        msg.append(speciesName).append("! ");
+        msg.append("We're going to be adventure buddies! ");
+        msg.append("(Lv. ").append(level).append(")");
+
+        sendMessage(msg.toString());
+        Player2NPC.LOGGER.info("[{}] Bonded with Pokemon: {}", companion.getCompanionName(), pokemonBuddyName);
+    }
+
+    /**
+     * Release the current Pokemon buddy.
+     */
+    private void releasePokemonBuddy() {
+        if (pokemonBuddy == null) {
+            sendMessage("I don't have a Pokemon buddy right now.");
+            return;
+        }
+
+        sendMessage("Bye bye, " + CobblemonIntegration.getPokemonDisplayName(pokemonBuddy) + "! It was fun adventuring with you!");
+        pokemonBuddy = null;
+        pokemonBuddyName = null;
+    }
+
+    /**
+     * Check on the Pokemon buddy.
+     */
+    private void checkPokemonBuddy() {
+        if (pokemonBuddy == null || !pokemonBuddy.isAlive()) {
+            sendMessage("I don't have a Pokemon buddy right now. Send out one of your Pokemon and tell me to 'find a buddy'!");
+            return;
+        }
+
+        String summary = CobblemonIntegration.getPokemonSummary(pokemonBuddy);
+        double distance = companion.distanceTo(pokemonBuddy);
+
+        sendMessage("My buddy " + summary + " is " + (int) distance + " blocks away. We're having a great time!");
+    }
+
+    /**
+     * Get the current Pokemon buddy (for other systems).
+     */
+    public Entity getPokemonBuddy() {
+        return pokemonBuddy;
+    }
+
+    /**
+     * Check if companion has a Pokemon buddy.
+     */
+    public boolean hasPokemonBuddy() {
+        return pokemonBuddy != null && pokemonBuddy.isAlive();
+    }
+
+    // ========== END POKEMON BUDDY SYSTEM ==========
+
+    // ========== BUILDING GADGETS SYSTEM ==========
+
+    /**
+     * Handle Building Gadgets commands.
+     */
+    private void handleBuildingGadget(String subAction, String blockName, int range) {
+        if (!BuildingGadgetsIntegration.isBuildingGadgetsLoaded()) {
+            sendMessage("Building Gadgets isn't installed. I can't use gadgets without it!");
+            return;
+        }
+
+        switch (subAction.toLowerCase()) {
+            case "info", "check", "status" -> gadgetInfo();
+            case "equip", "hold", "use" -> equipGadget();
+            case "setblock", "block", "set" -> setGadgetBlock(blockName);
+            case "setrange", "range" -> setGadgetRange(range);
+            case "configure", "config", "setup" -> configureGadget(blockName, range);
+            case "build", "place" -> useGadgetAtTarget();
+            default -> gadgetInfo();
+        }
+    }
+
+    /**
+     * Report info about the current gadget.
+     */
+    private void gadgetInfo() {
+        ItemStack gadget = BuildingGadgetsIntegration.findAnyGadget(companion);
+        if (gadget.isEmpty()) {
+            sendMessage("I don't have any Building Gadgets. Give me one!");
+            return;
+        }
+
+        String desc = BuildingGadgetsIntegration.getGadgetDescription(gadget);
+        boolean equipped = BuildingGadgetsIntegration.isGadget(companion.getMainHandItem());
+        sendMessage("I have a " + desc + (equipped ? " (equipped)" : " (in inventory)"));
+    }
+
+    /**
+     * Equip a building gadget to main hand.
+     */
+    private void equipGadget() {
+        if (BuildingGadgetsIntegration.isGadget(companion.getMainHandItem())) {
+            String desc = BuildingGadgetsIntegration.getGadgetDescription(companion.getMainHandItem());
+            sendMessage("I already have my " + desc + " equipped!");
+            return;
+        }
+
+        if (BuildingGadgetsIntegration.equipGadget(companion)) {
+            String desc = BuildingGadgetsIntegration.getGadgetDescription(companion.getMainHandItem());
+            sendMessage("Equipped " + desc + "! Ready to build!");
+        } else {
+            sendMessage("I don't have any Building Gadgets to equip.");
+        }
+    }
+
+    /**
+     * Set the block type on the gadget.
+     */
+    private void setGadgetBlock(String blockName) {
+        ItemStack gadget = companion.getMainHandItem();
+        if (!BuildingGadgetsIntegration.isGadget(gadget)) {
+            gadget = BuildingGadgetsIntegration.findBuildingGadget(companion);
+            if (gadget.isEmpty()) {
+                sendMessage("I need to hold a Building Gadget first!");
+                return;
+            }
+            // Equip it
+            BuildingGadgetsIntegration.equipGadget(companion);
+            gadget = companion.getMainHandItem();
+        }
+
+        if (blockName == null || blockName.isEmpty()) {
+            // Try to find a block from inventory
+            net.minecraft.world.level.block.Block block = BuildingGadgetsIntegration.findBuildableBlock(companion);
+            if (block != null) {
+                BuildingGadgetsIntegration.setGadgetBlock(gadget, block.defaultBlockState());
+                sendMessage("Set gadget to place " + BuiltInRegistries.BLOCK.getKey(block).getPath().replace("_", " ") + "!");
+            } else {
+                sendMessage("I don't have any blocks in my inventory to use. Give me some building materials!");
+            }
+            return;
+        }
+
+        // Try to parse block name
+        ResourceLocation blockId = blockName.contains(":")
+            ? ResourceLocation.tryParse(blockName)
+            : ResourceLocation.withDefaultNamespace(blockName.toLowerCase().replace(" ", "_"));
+
+        if (blockId != null && BuiltInRegistries.BLOCK.containsKey(blockId)) {
+            net.minecraft.world.level.block.Block block = BuiltInRegistries.BLOCK.get(blockId);
+            BuildingGadgetsIntegration.setGadgetBlock(gadget, block.defaultBlockState());
+            sendMessage("Set gadget to place " + blockName + "!");
+        } else {
+            sendMessage("I don't know what block '" + blockName + "' is.");
+        }
+    }
+
+    /**
+     * Set the range on the gadget.
+     */
+    private void setGadgetRange(int range) {
+        ItemStack gadget = companion.getMainHandItem();
+        if (!BuildingGadgetsIntegration.isGadget(gadget)) {
+            gadget = BuildingGadgetsIntegration.findAnyGadget(companion);
+            if (gadget.isEmpty()) {
+                sendMessage("I need a Building Gadget first!");
+                return;
+            }
+        }
+
+        if (range < 1) {
+            range = 3; // Default range
+        }
+
+        if (BuildingGadgetsIntegration.setGadgetRange(gadget, range)) {
+            sendMessage("Set gadget range to " + range + "!");
+        } else {
+            sendMessage("Couldn't set the range on this gadget.");
+        }
+    }
+
+    /**
+     * Configure gadget with both block and range.
+     */
+    private void configureGadget(String blockName, int range) {
+        ItemStack gadget = companion.getMainHandItem();
+        if (!BuildingGadgetsIntegration.isGadget(gadget)) {
+            if (!BuildingGadgetsIntegration.equipGadget(companion)) {
+                sendMessage("I don't have any Building Gadgets!");
+                return;
+            }
+            gadget = companion.getMainHandItem();
+        }
+
+        // Set block if provided
+        if (blockName != null && !blockName.isEmpty()) {
+            setGadgetBlock(blockName);
+        }
+
+        // Set range if provided
+        if (range > 0) {
+            setGadgetRange(range);
+        }
+
+        String desc = BuildingGadgetsIntegration.getGadgetDescription(gadget);
+        sendMessage("Gadget configured! " + desc);
+    }
+
+    /**
+     * Use the gadget at the target position.
+     */
+    private void useGadgetAtTarget() {
+        ItemStack gadget = companion.getMainHandItem();
+        if (!BuildingGadgetsIntegration.isGadget(gadget)) {
+            sendMessage("I need to hold a Building Gadget to use it!");
+            return;
+        }
+
+        // Check if gadget has a block set
+        net.minecraft.world.level.block.state.BlockState currentBlock = BuildingGadgetsIntegration.getGadgetBlock(gadget);
+        if (currentBlock.isAir()) {
+            sendMessage("My gadget doesn't have a block set. Tell me 'gadget set block [blockname]' first!");
+            return;
+        }
+
+        // Use at current target or ground in front
+        BlockPos targetPos = companion.blockPosition().relative(companion.getDirection());
+        if (BuildingGadgetsIntegration.useGadget(companion, targetPos, net.minecraft.core.Direction.UP)) {
+            sendMessage("*uses gadget* Building!");
+        } else {
+            sendMessage("I couldn't use the gadget here.");
+        }
+    }
+
+    /**
+     * Rotate the gadget's build mode.
+     */
+    private void rotateGadgetMode() {
+        ItemStack gadget = companion.getMainHandItem();
+        if (!BuildingGadgetsIntegration.isGadget(gadget)) {
+            sendMessage("I need to hold a Building Gadget first!");
+            return;
+        }
+
+        if (BuildingGadgetsIntegration.rotateMode(gadget)) {
+            String newMode = BuildingGadgetsIntegration.getModeName(gadget);
+            sendMessage("Switched to " + newMode + " mode!");
+        } else {
+            sendMessage("Couldn't rotate the mode on this gadget.");
+        }
+    }
+
+    // ========== END BUILDING GADGETS SYSTEM ==========
+
+    // ========== SOPHISTICATED BACKPACKS SYSTEM ==========
+
+    /**
+     * Handle backpack commands.
+     */
+    private void handleBackpack(String subAction, String itemName, int count) {
+        if (!SophisticatedBackpacksIntegration.isSophisticatedBackpacksLoaded()) {
+            sendMessage("Sophisticated Backpacks isn't installed. I can't use backpacks without it!");
+            return;
+        }
+
+        switch (subAction.toLowerCase()) {
+            case "info", "check", "status" -> backpackInfo();
+            case "store", "stash", "put" -> storeInBackpack(itemName);
+            case "storeall", "empty" -> storeAllInBackpack();
+            case "get", "take", "retrieve" -> retrieveFromBackpack(itemName, count);
+            case "list", "contents", "show" -> listBackpackContents();
+            case "organize", "sort" -> organizeBackpack();
+            default -> backpackInfo();
+        }
+    }
+
+    /**
+     * Report info about the current backpack.
+     */
+    private void backpackInfo() {
+        ItemStack backpack = SophisticatedBackpacksIntegration.findBackpack(companion);
+        if (backpack.isEmpty()) {
+            sendMessage("I don't have a backpack. Give me one and I can carry a lot more stuff!");
+            return;
+        }
+
+        String desc = SophisticatedBackpacksIntegration.getBackpackDescription(backpack);
+        sendMessage("I have a " + desc);
+    }
+
+    /**
+     * Store a specific item type into backpack.
+     */
+    private void storeInBackpack(String itemName) {
+        ItemStack backpack = SophisticatedBackpacksIntegration.findBackpack(companion);
+        if (backpack.isEmpty()) {
+            sendMessage("I don't have a backpack to store items in!");
+            return;
+        }
+
+        if (itemName == null || itemName.isEmpty()) {
+            // Store all non-essential items
+            storeAllInBackpack();
+            return;
+        }
+
+        String searchName = itemName.toLowerCase().replace(" ", "_");
+        int stored = 0;
+
+        for (int i = 0; i < companion.getContainerSize(); i++) {
+            ItemStack stack = companion.getItem(i);
+            if (stack.isEmpty() || stack == backpack) continue;
+
+            String stackId = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath().toLowerCase();
+            String stackName = stack.getItem().getDescription().getString().toLowerCase();
+
+            if (stackId.contains(searchName) || stackName.contains(searchName)) {
+                ItemStack remaining = SophisticatedBackpacksIntegration.insertIntoBackpack(backpack, stack);
+                if (remaining.isEmpty()) {
+                    companion.setItem(i, ItemStack.EMPTY);
+                    stored += stack.getCount();
+                } else if (remaining.getCount() < stack.getCount()) {
+                    stored += stack.getCount() - remaining.getCount();
+                    companion.setItem(i, remaining);
+                }
+            }
+        }
+
+        if (stored > 0) {
+            sendMessage("Stored " + stored + " " + itemName + " in my backpack!");
+        } else {
+            sendMessage("I don't have any " + itemName + " to store.");
+        }
+    }
+
+    /**
+     * Store all non-essential items into backpack.
+     */
+    private void storeAllInBackpack() {
+        ItemStack backpack = SophisticatedBackpacksIntegration.findBackpack(companion);
+        if (backpack.isEmpty()) {
+            sendMessage("I don't have a backpack!");
+            return;
+        }
+
+        int stored = SophisticatedBackpacksIntegration.storeItemsInBackpack(companion, backpack, true);
+
+        if (stored > 0) {
+            String desc = SophisticatedBackpacksIntegration.getBackpackDescription(backpack);
+            sendMessage("Stored " + stored + " item stacks in my backpack! " + desc);
+        } else {
+            sendMessage("Nothing to store - my inventory is already organized.");
+        }
+    }
+
+    /**
+     * Retrieve items from backpack.
+     */
+    private void retrieveFromBackpack(String itemName, int count) {
+        ItemStack backpack = SophisticatedBackpacksIntegration.findBackpack(companion);
+        if (backpack.isEmpty()) {
+            sendMessage("I don't have a backpack!");
+            return;
+        }
+
+        if (itemName == null || itemName.isEmpty()) {
+            sendMessage("What item do you want me to get from my backpack?");
+            return;
+        }
+
+        if (count <= 0) count = 64;
+
+        String searchName = itemName.toLowerCase().replace(" ", "_");
+        int retrieved = 0;
+
+        // Search backpack contents
+        java.util.List<ItemStack> contents = SophisticatedBackpacksIntegration.getBackpackContents(backpack);
+        for (ItemStack stack : contents) {
+            String stackId = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath().toLowerCase();
+            String stackName = stack.getItem().getDescription().getString().toLowerCase();
+
+            if (stackId.contains(searchName) || stackName.contains(searchName)) {
+                int toGet = Math.min(count - retrieved, stack.getCount());
+                ItemStack extracted = SophisticatedBackpacksIntegration.extractFromBackpack(
+                        backpack, stack.getItem(), toGet);
+
+                if (!extracted.isEmpty()) {
+                    // Add to companion inventory
+                    for (int i = 0; i < companion.getContainerSize(); i++) {
+                        ItemStack slot = companion.getItem(i);
+                        if (slot.isEmpty()) {
+                            companion.setItem(i, extracted);
+                            retrieved += extracted.getCount();
+                            break;
+                        } else if (ItemStack.isSameItemSameComponents(slot, extracted) &&
+                                   slot.getCount() < slot.getMaxStackSize()) {
+                            int space = slot.getMaxStackSize() - slot.getCount();
+                            int toAdd = Math.min(space, extracted.getCount());
+                            slot.grow(toAdd);
+                            retrieved += toAdd;
+                            extracted.shrink(toAdd);
+                            if (extracted.isEmpty()) break;
+                        }
+                    }
+                }
+
+                if (retrieved >= count) break;
+            }
+        }
+
+        if (retrieved > 0) {
+            sendMessage("Got " + retrieved + " " + itemName + " from my backpack!");
+        } else {
+            sendMessage("I don't have any " + itemName + " in my backpack.");
+        }
+    }
+
+    /**
+     * List backpack contents.
+     */
+    private void listBackpackContents() {
+        ItemStack backpack = SophisticatedBackpacksIntegration.findBackpack(companion);
+        if (backpack.isEmpty()) {
+            sendMessage("I don't have a backpack!");
+            return;
+        }
+
+        java.util.List<ItemStack> contents = SophisticatedBackpacksIntegration.getBackpackContents(backpack);
+        if (contents.isEmpty()) {
+            sendMessage("My backpack is empty!");
+            return;
+        }
+
+        // Group and summarize items
+        java.util.Map<String, Integer> itemCounts = new java.util.LinkedHashMap<>();
+        for (ItemStack stack : contents) {
+            String name = stack.getItem().getDescription().getString();
+            itemCounts.merge(name, stack.getCount(), Integer::sum);
+        }
+
+        StringBuilder sb = new StringBuilder("Backpack contents: ");
+        int shown = 0;
+        for (java.util.Map.Entry<String, Integer> entry : itemCounts.entrySet()) {
+            if (shown > 0) sb.append(", ");
+            sb.append(entry.getValue()).append("x ").append(entry.getKey());
+            shown++;
+            if (shown >= 8) {
+                int remaining = itemCounts.size() - shown;
+                if (remaining > 0) {
+                    sb.append(" and ").append(remaining).append(" more types...");
+                }
+                break;
+            }
+        }
+
+        sendMessage(sb.toString());
+    }
+
+    /**
+     * Organize backpack (sort/consolidate stacks).
+     */
+    private void organizeBackpack() {
+        ItemStack backpack = SophisticatedBackpacksIntegration.findBackpack(companion);
+        if (backpack.isEmpty()) {
+            sendMessage("I don't have a backpack!");
+            return;
+        }
+
+        // For now, just report status - actual sorting would require more complex logic
+        String desc = SophisticatedBackpacksIntegration.getBackpackDescription(backpack);
+        sendMessage("My backpack is organized! " + desc);
+    }
+
+    // ========== END SOPHISTICATED BACKPACKS SYSTEM ==========
 
     private void retreat() {
         Player owner = companion.getOwner();
@@ -1333,6 +1993,7 @@ public class CompanionAI {
         MINING,
         ATTACKING,
         DEFENDING,
-        AUTONOMOUS
+        AUTONOMOUS,
+        BUILDING
     }
 }

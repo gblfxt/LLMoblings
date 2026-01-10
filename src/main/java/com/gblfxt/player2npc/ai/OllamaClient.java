@@ -149,6 +149,37 @@ TELEPORT:
 - {"action": "tpaccept"} - Accept teleport request
 - {"action": "tpdeny"} - Deny teleport request
 
+BUILDING:
+- {"action": "build", "structure": "cottage", "here": true} - Build a cottage at current location
+- {"action": "build", "structure": "cottage", "x": 100, "y": 64, "z": 200} - Build at specific coords
+- I can gather materials myself (mine stone, chop trees) or use ME network/chests!
+
+POKEMON BUDDY (Cobblemon):
+- {"action": "pokemon", "subaction": "find"} - Bond with nearest player's Pokemon
+- {"action": "pokemon", "subaction": "find", "name": "Pikachu"} - Bond with specific Pokemon
+- {"action": "pokemon", "subaction": "release"} - Release current Pokemon buddy
+- {"action": "pokemon", "subaction": "status"} - Check on Pokemon buddy
+- My Pokemon buddy will follow me on adventures!
+
+BUILDING GADGETS (if mod is installed):
+- {"action": "gadget", "subaction": "info"} - Check what gadget I have and its settings
+- {"action": "gadget", "subaction": "equip"} - Equip a building gadget from inventory
+- {"action": "gadget", "subaction": "setblock", "block": "stone"} - Set the block the gadget places
+- {"action": "gadget", "subaction": "setrange", "range": 5} - Set the gadget's build range
+- {"action": "gadget", "subaction": "configure", "block": "cobblestone", "range": 3} - Configure both at once
+- {"action": "gadget", "subaction": "build"} - Use the gadget to place blocks
+- Building Gadget types: building, exchanging, copy-paste, destruction
+- I can configure the gadget's block type and range, then use it to build!
+
+SOPHISTICATED BACKPACKS (if mod is installed):
+- {"action": "backpack", "subaction": "info"} - Check my backpack status (slots used, capacity)
+- {"action": "backpack", "subaction": "store", "item": "cobblestone"} - Store specific item in backpack
+- {"action": "backpack", "subaction": "storeall"} - Store all non-essential items in backpack
+- {"action": "backpack", "subaction": "get", "item": "diamond", "count": 10} - Get items from backpack
+- {"action": "backpack", "subaction": "list"} - List what's in my backpack
+- Backpack tiers: Leather (27), Copper (36), Iron (45), Gold (54), Diamond (72), Netherite (81)
+- I can use my backpack to carry way more stuff on adventures!
+
 === RESPONSE RULES ===
 1. ONLY output JSON - never plain text
 2. Always include "action" field
@@ -163,6 +194,20 @@ TELEPORT:
 "know any good enchants?" -> {"action": "idle", "message": "For weapons: Sharpness V, Looting III, Mending. For armor: Protection IV, Unbreaking III, Mending. Apotheosis adds even crazier ones!"}
 "seen any Pokemon?" -> {"action": "idle", "message": "Cobblemon Pokemon spawn based on biome! Water types near water, fire types in deserts/nether. Check the Cobblepedia for spawn info!"}
 "defend me" -> {"action": "defend", "message": "I've got your back!"}
+"build a house here" -> {"action": "build", "structure": "cottage", "here": true, "message": "I'll build you a cozy cottage right here!"}
+"build me a cottage at 100 64 200" -> {"action": "build", "structure": "cottage", "x": 100, "y": 64, "z": 200, "message": "On my way to build at those coordinates!"}
+"find a pokemon buddy" -> {"action": "pokemon", "subaction": "find", "message": "Let me find a Pokemon to adventure with!"}
+"bond with Pikachu" -> {"action": "pokemon", "subaction": "find", "name": "Pikachu", "message": "I'll bond with Pikachu!"}
+"release your buddy" -> {"action": "pokemon", "subaction": "release", "message": "Okay, saying goodbye to my Pokemon friend!"}
+"equip your gadget" -> {"action": "gadget", "subaction": "equip", "message": "Getting my Building Gadget ready!"}
+"set gadget to stone" -> {"action": "gadget", "subaction": "setblock", "block": "stone", "message": "Setting my gadget to place stone!"}
+"configure gadget for oak planks range 5" -> {"action": "gadget", "subaction": "configure", "block": "oak_planks", "range": 5, "message": "Configuring gadget for oak planks with range 5!"}
+"use the gadget" -> {"action": "gadget", "subaction": "build", "message": "Here we go! *uses gadget*"}
+"check your backpack" -> {"action": "backpack", "subaction": "info", "message": "Let me check my backpack!"}
+"store the cobblestone in your backpack" -> {"action": "backpack", "subaction": "store", "item": "cobblestone", "message": "Putting the cobblestone in my backpack!"}
+"stash everything in backpack" -> {"action": "backpack", "subaction": "storeall", "message": "Storing everything in my backpack!"}
+"get diamonds from backpack" -> {"action": "backpack", "subaction": "get", "item": "diamond", "message": "Getting diamonds from my backpack!"}
+"what's in your backpack" -> {"action": "backpack", "subaction": "list", "message": "Let me see what I've got in here..."}
 """.formatted(companionName);
     }
 
@@ -399,6 +444,178 @@ TELEPORT:
             // Check if they want to deposit everything including gear
             if (lower.contains("everything") || lower.contains("all items") || lower.contains("including gear")) {
                 action.setParameter("keepGear", "false");
+            }
+            return action;
+        }
+
+        // Build structures
+        if (lower.contains("build") && (lower.contains("house") || lower.contains("cottage") ||
+            lower.contains("home") || lower.contains("shelter"))) {
+            CompanionAction action = new CompanionAction("build", text);
+            action.setParameter("structure", "cottage");
+
+            // Check for "here" keyword
+            if (lower.contains("here") || lower.contains("this spot") || lower.contains("right here")) {
+                action.setParameter("here", "true");
+            }
+
+            // Try to extract coordinates if present (pattern: "at X Y Z" or "X, Y, Z")
+            java.util.regex.Pattern coordPattern = java.util.regex.Pattern.compile(
+                "(?:at\\s+)?([-]?\\d+)[,\\s]+([-]?\\d+)[,\\s]+([-]?\\d+)");
+            java.util.regex.Matcher matcher = coordPattern.matcher(text);
+            if (matcher.find()) {
+                action.setParameter("x", matcher.group(1));
+                action.setParameter("y", matcher.group(2));
+                action.setParameter("z", matcher.group(3));
+            }
+            return action;
+        }
+
+        // Pokemon buddy commands
+        if (lower.contains("pokemon") || lower.contains("buddy") || lower.contains("poke")) {
+            CompanionAction action = new CompanionAction("pokemon", text);
+
+            if (lower.contains("release") || lower.contains("bye") || lower.contains("dismiss") ||
+                lower.contains("let go")) {
+                action.setParameter("subaction", "release");
+            } else if (lower.contains("status") || lower.contains("check") || lower.contains("how is")) {
+                action.setParameter("subaction", "status");
+            } else {
+                action.setParameter("subaction", "find");
+
+                // Try to extract Pokemon name
+                String[] pokemonKeywords = {"with", "bond with", "find", "get"};
+                for (String keyword : pokemonKeywords) {
+                    int idx = lower.indexOf(keyword);
+                    if (idx >= 0) {
+                        String afterKeyword = text.substring(idx + keyword.length()).trim();
+                        String[] words = afterKeyword.split("\\s+");
+                        if (words.length > 0 && !words[0].isEmpty()) {
+                            // Capitalize first letter
+                            String pokeName = words[0].substring(0, 1).toUpperCase() + words[0].substring(1).toLowerCase();
+                            action.setParameter("name", pokeName);
+                            break;
+                        }
+                    }
+                }
+            }
+            return action;
+        }
+
+        // Building Gadgets commands
+        if (lower.contains("gadget")) {
+            CompanionAction action = new CompanionAction("gadget", text);
+
+            // Determine subaction
+            if (lower.contains("equip") || lower.contains("hold")) {
+                action.setParameter("subaction", "equip");
+            } else if (lower.contains("set block") || lower.contains("setblock") ||
+                       (lower.contains("set") && lower.contains("to"))) {
+                action.setParameter("subaction", "setblock");
+                // Try to extract block name
+                String[] blockKeywords = {"to ", "block ", "with "};
+                for (String keyword : blockKeywords) {
+                    int idx = lower.indexOf(keyword);
+                    if (idx >= 0) {
+                        String afterKeyword = text.substring(idx + keyword.length()).trim();
+                        String[] words = afterKeyword.split("\\s+");
+                        if (words.length > 0 && !words[0].isEmpty()) {
+                            action.setParameter("block", words[0].toLowerCase().replace(" ", "_"));
+                            break;
+                        }
+                    }
+                }
+            } else if (lower.contains("range")) {
+                action.setParameter("subaction", "setrange");
+                // Try to extract range number
+                java.util.regex.Matcher rangeMatcher = java.util.regex.Pattern.compile("\\d+").matcher(text);
+                if (rangeMatcher.find()) {
+                    action.setParameter("range", rangeMatcher.group());
+                }
+            } else if (lower.contains("config") || lower.contains("setup")) {
+                action.setParameter("subaction", "configure");
+                // Try to extract block and range
+                java.util.regex.Matcher rangeMatcher = java.util.regex.Pattern.compile("\\d+").matcher(text);
+                if (rangeMatcher.find()) {
+                    action.setParameter("range", rangeMatcher.group());
+                }
+                // Common block names
+                String[] blocks = {"stone", "cobblestone", "oak_planks", "spruce_planks", "birch_planks",
+                                   "brick", "glass", "dirt", "sand", "gravel", "iron_block", "gold_block"};
+                for (String block : blocks) {
+                    if (lower.contains(block.replace("_", " ")) || lower.contains(block)) {
+                        action.setParameter("block", block);
+                        break;
+                    }
+                }
+            } else if (lower.contains("use") || lower.contains("build") || lower.contains("place")) {
+                action.setParameter("subaction", "build");
+            } else {
+                action.setParameter("subaction", "info");
+            }
+            return action;
+        }
+
+        // Sophisticated Backpacks commands
+        if (lower.contains("backpack") || lower.contains("pack") && !lower.contains("modpack")) {
+            CompanionAction action = new CompanionAction("backpack", text);
+
+            // Determine subaction
+            if (lower.contains("store") || lower.contains("stash") || lower.contains("put in")) {
+                if (lower.contains("all") || lower.contains("everything")) {
+                    action.setParameter("subaction", "storeall");
+                } else {
+                    action.setParameter("subaction", "store");
+                    // Try to extract item name
+                    String[] storeKeywords = {"store ", "stash ", "put "};
+                    for (String keyword : storeKeywords) {
+                        int idx = lower.indexOf(keyword);
+                        if (idx >= 0) {
+                            String afterKeyword = text.substring(idx + keyword.length()).trim();
+                            // Remove "in backpack" etc
+                            afterKeyword = afterKeyword.replaceAll("\\s*(in|into|to)\\s*(my\\s+)?backpack.*", "").trim();
+                            if (!afterKeyword.isEmpty()) {
+                                String[] words = afterKeyword.split("\\s+");
+                                if (words.length > 0) {
+                                    action.setParameter("item", words[0].toLowerCase().replace(" ", "_"));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (lower.contains("get") || lower.contains("take") || lower.contains("retrieve") ||
+                       lower.contains("grab")) {
+                action.setParameter("subaction", "get");
+                // Try to extract item name and count
+                String[] getKeywords = {"get ", "take ", "retrieve ", "grab "};
+                for (String keyword : getKeywords) {
+                    int idx = lower.indexOf(keyword);
+                    if (idx >= 0) {
+                        String afterKeyword = text.substring(idx + keyword.length()).trim();
+                        afterKeyword = afterKeyword.replaceAll("\\s*(from|out of)\\s*(my\\s+)?backpack.*", "").trim();
+                        if (!afterKeyword.isEmpty()) {
+                            // Try to extract count
+                            java.util.regex.Matcher countMatcher = java.util.regex.Pattern.compile("(\\d+)").matcher(afterKeyword);
+                            if (countMatcher.find()) {
+                                action.setParameter("count", countMatcher.group(1));
+                                afterKeyword = afterKeyword.replaceFirst("\\d+\\s*", "").trim();
+                            }
+                            String[] words = afterKeyword.split("\\s+");
+                            if (words.length > 0 && !words[0].isEmpty()) {
+                                action.setParameter("item", words[0].toLowerCase().replace(" ", "_"));
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else if (lower.contains("list") || lower.contains("contents") || lower.contains("what's in") ||
+                       lower.contains("show me")) {
+                action.setParameter("subaction", "list");
+            } else if (lower.contains("organize") || lower.contains("sort")) {
+                action.setParameter("subaction", "organize");
+            } else {
+                action.setParameter("subaction", "info");
             }
             return action;
         }

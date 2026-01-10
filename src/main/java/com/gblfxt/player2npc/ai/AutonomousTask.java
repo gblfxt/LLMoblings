@@ -8,7 +8,10 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.animal.*;
+import net.minecraft.world.entity.animal.horse.AbstractHorse;
 import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.item.*;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
@@ -394,14 +397,24 @@ public class AutonomousTask {
             huntTarget = findHuntTarget();
             lastPosition = companion.position();
             stuckTicks = 0;
+
+            if (huntTarget != null) {
+                String targetName = BuiltInRegistries.ENTITY_TYPE.getKey(huntTarget.getType()).getPath()
+                        .replace("_", " ");
+                report("Found a " + targetName + "! Going after it.");
+            }
         }
 
         if (huntTarget == null || !huntTarget.isAlive()) {
             huntTarget = findHuntTarget();
             if (huntTarget == null) {
-                report("No animals nearby to hunt.");
+                report("No animals nearby to hunt. I'll look elsewhere or try the ME network.");
                 changeState(AutonomousState.ASSESSING);
                 return;
+            } else {
+                String targetName = BuiltInRegistries.ENTITY_TYPE.getKey(huntTarget.getType()).getPath()
+                        .replace("_", " ");
+                report("Spotted a " + targetName + "!");
             }
         }
 
@@ -462,28 +475,270 @@ public class AutonomousTask {
     private net.minecraft.world.entity.Entity findHuntTarget() {
         AABB searchBox = companion.getBoundingBox().inflate(baseRadius);
 
-        // Look for passive mobs - exclude pets and Cobblemon Pokemon
-        List<Animal> animals = companion.level().getEntitiesOfClass(Animal.class, searchBox,
-                animal -> {
-                    if (!animal.isAlive()) return false;
-                    if (animal instanceof Wolf) return false;  // Don't hunt wolves
-                    if (animal instanceof Cat) return false;   // Don't hunt cats
-                    if (animal instanceof Parrot) return false; // Don't hunt parrots
+        // Search for all living entities, then filter and score them
+        List<LivingEntity> candidates = companion.level().getEntitiesOfClass(LivingEntity.class, searchBox,
+                entity -> {
+                    if (!entity.isAlive()) return false;
+                    if (entity == companion) return false;
+                    if (entity == companion.getOwner()) return false;
 
-                    // Exclude Cobblemon Pokemon
-                    String className = animal.getClass().getName().toLowerCase();
-                    if (className.contains("cobblemon") || className.contains("pokemon")) {
-                        Player2NPC.LOGGER.debug("Skipping Cobblemon entity: {}", animal.getClass().getSimpleName());
+                    // Get entity info for filtering
+                    String entityId = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString().toLowerCase();
+                    String className = entity.getClass().getName().toLowerCase();
+
+                    // === ALWAYS EXCLUDE ===
+
+                    // Cobblemon Pokemon - never hunt
+                    if (className.contains("cobblemon") || className.contains("pokemon") ||
+                        entityId.contains("cobblemon")) {
                         return false;
                     }
 
-                    return true;
+                    // Players and villagers
+                    if (entity instanceof net.minecraft.world.entity.player.Player) return false;
+                    if (entityId.contains("villager") || entityId.contains("wandering_trader")) return false;
+
+                    // Pets and tameable animals that might be tamed
+                    if (entity instanceof Wolf wolf && wolf.isTame()) return false;
+                    if (entity instanceof Cat cat && cat.isTame()) return false;
+                    if (entity instanceof Parrot) return false;  // Parrots are always pets
+                    if (entity instanceof Fox) return false;  // Foxes are cute, don't hunt
+
+                    // Horses/mounts - don't hunt mounts
+                    if (entity instanceof AbstractHorse) return false;
+                    if (entityId.contains("horse") || entityId.contains("donkey") ||
+                        entityId.contains("mule") || entityId.contains("llama")) return false;
+
+                    // Alex's Mobs pets/mounts
+                    if (entityId.contains("elephant") || entityId.contains("gorilla") ||
+                        entityId.contains("capuchin") || entityId.contains("crow") ||
+                        entityId.contains("roadrunner")) return false;
+
+                    // Bees - important for farms
+                    if (entity instanceof Bee) return false;
+
+                    // Iron golems and snow golems
+                    if (entityId.contains("golem")) return false;
+
+                    // Axolotls and dolphins - cute/friendly
+                    if (entityId.contains("axolotl") || entityId.contains("dolphin")) return false;
+
+                    // Allays
+                    if (entityId.contains("allay")) return false;
+
+                    // === CHECK IF FARM ANIMAL ===
+                    if (isFarmAnimal(entity)) {
+                        return false;
+                    }
+
+                    // === CHECK IF HUNTABLE ===
+                    return isHuntableForFood(entity, entityId, className);
                 }
         );
 
-        return animals.stream()
-                .min(Comparator.comparingDouble(a -> companion.distanceTo(a)))
-                .orElse(null);
+        if (candidates.isEmpty()) {
+            Player2NPC.LOGGER.debug("No hunt targets found in {} block radius", baseRadius);
+            return null;
+        }
+
+        // Score and sort candidates - prefer high-value targets that are close
+        candidates.sort((a, b) -> {
+            double scoreA = getHuntScore(a) / (1 + companion.distanceTo(a) * 0.1);
+            double scoreB = getHuntScore(b) / (1 + companion.distanceTo(b) * 0.1);
+            return Double.compare(scoreB, scoreA);  // Higher score first
+        });
+
+        LivingEntity chosen = candidates.get(0);
+        String chosenId = BuiltInRegistries.ENTITY_TYPE.getKey(chosen.getType()).getPath();
+        Player2NPC.LOGGER.info("[{}] Hunting target selected: {} (score: {}, distance: {})",
+                companion.getCompanionName(), chosenId, getHuntScore(chosen), (int) companion.distanceTo(chosen));
+
+        return chosen;
+    }
+
+    /**
+     * Check if an animal appears to be a farm animal (owned/penned).
+     */
+    private boolean isFarmAnimal(LivingEntity entity) {
+        // Named animals are usually farm animals or pets
+        if (entity.hasCustomName()) {
+            Player2NPC.LOGGER.debug("Skipping {} - has custom name: {}",
+                    entity.getType().getDescriptionId(), entity.getCustomName().getString());
+            return true;
+        }
+
+        // Leashed animals are farm animals
+        if (entity instanceof net.minecraft.world.entity.Mob mob && mob.isLeashed()) {
+            Player2NPC.LOGGER.debug("Skipping {} - is leashed", entity.getType().getDescriptionId());
+            return true;
+        }
+
+        // Check if animal is in a fenced/enclosed area
+        if (isInEnclosure(entity)) {
+            Player2NPC.LOGGER.debug("Skipping {} - appears to be in an enclosure", entity.getType().getDescriptionId());
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an entity is inside a fenced enclosure or near farm structures.
+     */
+    private boolean isInEnclosure(LivingEntity entity) {
+        BlockPos pos = entity.blockPosition();
+        int fenceCount = 0;
+        int farmBlockCount = 0;
+
+        // Check surrounding blocks in a 5 block radius
+        for (int x = -5; x <= 5; x++) {
+            for (int z = -5; z <= 5; z++) {
+                for (int y = -1; y <= 2; y++) {
+                    BlockPos checkPos = pos.offset(x, y, z);
+                    String blockName = companion.level().getBlockState(checkPos).getBlock().getName().getString().toLowerCase();
+
+                    // Count fences and walls
+                    if (blockName.contains("fence") || blockName.contains("wall") ||
+                        blockName.contains("gate")) {
+                        fenceCount++;
+                    }
+
+                    // Count farm-related blocks
+                    if (blockName.contains("hay") || blockName.contains("trough") ||
+                        blockName.contains("feeder") || blockName.contains("barn") ||
+                        blockName.contains("stable") || blockName.contains("coop") ||
+                        blockName.contains("pen")) {
+                        farmBlockCount++;
+                    }
+                }
+            }
+        }
+
+        // If surrounded by fences (at least 8 fence blocks nearby) or near farm structures
+        if (fenceCount >= 8) {
+            return true;
+        }
+
+        // If near farm-related blocks
+        if (farmBlockCount >= 2) {
+            return true;
+        }
+
+        // Additional check: is the animal on a non-natural block? (cobblestone, planks, etc.)
+        BlockPos below = pos.below();
+        String groundBlock = companion.level().getBlockState(below).getBlock().getName().getString().toLowerCase();
+        if (groundBlock.contains("plank") || groundBlock.contains("cobblestone") ||
+            groundBlock.contains("stone_brick") || groundBlock.contains("hay")) {
+            // Standing on player-made flooring - likely a farm
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an entity can be hunted for food.
+     */
+    private boolean isHuntableForFood(LivingEntity entity, String entityId, String className) {
+        // === VANILLA FOOD ANIMALS ===
+        if (entity instanceof Cow) return true;      // Beef + leather
+        if (entity instanceof Pig) return true;      // Porkchop
+        if (entity instanceof Sheep) return true;    // Mutton + wool
+        if (entity instanceof Chicken) return true;  // Chicken + feathers
+        if (entity instanceof Rabbit) return true;   // Rabbit meat
+
+        // Fish (use entity ID since fish classes may vary)
+        if (entityId.contains("cod") || entityId.contains("salmon") ||
+            entityId.contains("tropical_fish") || entityId.contains("pufferfish")) return true;
+
+        // Squid
+        if (entityId.contains("squid") || entityId.contains("glow_squid")) return true;
+
+        // Turtle
+        if (entityId.contains("turtle")) return true;
+
+        // Mooshrooms - special cows
+        if (entityId.contains("mooshroom")) return true;
+
+        // Goats can be hunted but usually for horns
+        if (entityId.contains("goat")) return true;
+
+        // === MODDED ANIMALS - Alex's Mobs ===
+        // High value meat animals
+        if (entityId.contains("bison")) return true;
+        if (entityId.contains("moose")) return true;
+        if (entityId.contains("gazelle")) return true;
+        if (entityId.contains("kangaroo")) return true;
+        if (entityId.contains("capybara")) return true;
+        if (entityId.contains("mungus")) return true;
+        if (entityId.contains("catfish")) return true;
+        if (entityId.contains("flying_fish")) return true;
+        if (entityId.contains("giant_squid")) return true;
+        if (entityId.contains("hammerhead_shark")) return true;
+        if (entityId.contains("lobster")) return true;
+        if (entityId.contains("orca")) return true;
+
+        // Alex's Caves huntable
+        if (entityId.contains("tremorsaurus")) return true;
+        if (entityId.contains("grottoceratops")) return true;
+        if (entityId.contains("vallumraptor")) return true;
+
+        // === FARMER'S DELIGHT ===
+        if (entityId.contains("farmersdelight")) return true;  // Any FD animals
+
+        // === OTHER MODDED ===
+        // Ice and Fire dragons are too dangerous, but some animals
+        if (entityId.contains("iceandfire") &&
+            (entityId.contains("hippogryph_egg") || entityId.contains("amphithere"))) {
+            return false;  // Don't hunt these
+        }
+
+        // Generic check - if it's in the Animal class and not explicitly excluded
+        if (entity instanceof Animal) {
+            // Additional exclusions for modded
+            if (entityId.contains("familiar") || entityId.contains("pet") ||
+                entityId.contains("tamed") || entityId.contains("companion")) {
+                return false;
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Score a hunt target - higher means more valuable.
+     */
+    private int getHuntScore(LivingEntity entity) {
+        String entityId = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString().toLowerCase();
+
+        // High value - lots of food
+        if (entity instanceof Cow) return 100;
+        if (entityId.contains("mooshroom")) return 100;
+        if (entityId.contains("bison") || entityId.contains("moose")) return 100;
+
+        // Medium-high value
+        if (entity instanceof Pig) return 80;
+        if (entity instanceof Sheep) return 70;
+        if (entityId.contains("gazelle") || entityId.contains("kangaroo")) return 75;
+
+        // Medium value
+        if (entity instanceof Chicken) return 50;
+        if (entity instanceof Rabbit) return 40;
+        if (entityId.contains("capybara")) return 60;
+
+        // Fish - easy but low value
+        if (entityId.contains("cod") || entityId.contains("salmon")) return 30;
+        if (entityId.contains("tropical_fish")) return 20;
+
+        // Low value or risky
+        if (entityId.contains("goat")) return 25;  // Can ram you
+        if (entityId.contains("pufferfish")) return 10;  // Poisonous
+
+        // Default for other animals
+        if (entity instanceof Animal) return 35;
+
+        return 20;
     }
 
     private void tickGathering() {
