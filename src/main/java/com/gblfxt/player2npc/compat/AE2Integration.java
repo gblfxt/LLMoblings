@@ -32,13 +32,15 @@ public class AE2Integration {
     }
 
     /**
-     * Find ME network access points (interfaces, chests, terminals) near the companion.
+     * Find ME network access points (terminals preferred) near the companion.
+     * Prioritizes actual terminals over buses and interfaces.
      */
     public static List<BlockPos> findMEAccessPoints(Level level, BlockPos center, int radius) {
-        List<BlockPos> accessPoints = new ArrayList<>();
+        List<BlockPos> terminals = new ArrayList<>();
+        List<BlockPos> otherAccess = new ArrayList<>();
 
         if (!isAE2Loaded()) {
-            return accessPoints;
+            return terminals;
         }
 
         try {
@@ -48,8 +50,13 @@ public class AE2Integration {
                         BlockPos pos = center.offset(x, y, z);
                         BlockEntity be = level.getBlockEntity(pos);
 
-                        if (be != null && isMEAccessPoint(be)) {
-                            accessPoints.add(pos);
+                        if (be != null) {
+                            int priority = getMEAccessPriority(be);
+                            if (priority == 1) {
+                                terminals.add(pos);  // High priority - terminals
+                            } else if (priority == 2) {
+                                otherAccess.add(pos);  // Lower priority - interfaces, chests
+                            }
                         }
                     }
                 }
@@ -58,22 +65,55 @@ public class AE2Integration {
             Player2NPC.LOGGER.debug("Error scanning for ME access points: {}", e.getMessage());
         }
 
-        return accessPoints;
+        // Return terminals first, then other access points
+        if (!terminals.isEmpty()) {
+            Player2NPC.LOGGER.info("AE2: Found {} terminals", terminals.size());
+            return terminals;
+        }
+        if (!otherAccess.isEmpty()) {
+            Player2NPC.LOGGER.info("AE2: No terminals, using {} other access points", otherAccess.size());
+        }
+        return otherAccess;
     }
 
     /**
-     * Check if a block entity is an ME network access point.
+     * Get priority of ME access point.
+     * Returns: 1 = terminal (best), 2 = interface/chest, 0 = not an access point
      */
-    private static boolean isMEAccessPoint(BlockEntity be) {
-        String className = be.getClass().getName();
-        // Check for common AE2 block entities that provide grid access
-        return className.contains("appeng") && (
-                className.contains("Interface") ||
-                className.contains("Chest") ||
-                className.contains("Terminal") ||
-                className.contains("Drive") ||
-                className.contains("Pattern")
-        );
+    private static int getMEAccessPriority(BlockEntity be) {
+        String className = be.getClass().getName().toLowerCase();
+
+        if (!className.contains("appeng")) {
+            return 0;
+        }
+
+        // Priority 1: Actual terminals players use
+        if (className.contains("terminal") || className.contains("craftingmonitor")) {
+            // Exclude part-based terminals that might not be accessible
+            // Actually include them - terminals are the best access points
+            Player2NPC.LOGGER.debug("AE2: Found terminal: {}", be.getClass().getSimpleName());
+            return 1;
+        }
+
+        // Priority 2: ME Chests, Drives, Interfaces (can access grid but less ideal)
+        if (className.contains("chest") || className.contains("drive")) {
+            Player2NPC.LOGGER.debug("AE2: Found chest/drive: {}", be.getClass().getSimpleName());
+            return 2;
+        }
+
+        // Skip buses - they don't provide good grid access for item retrieval
+        if (className.contains("bus") || className.contains("import") || className.contains("export")) {
+            Player2NPC.LOGGER.debug("AE2: Skipping bus: {}", be.getClass().getSimpleName());
+            return 0;
+        }
+
+        // Priority 2: Generic interface
+        if (className.contains("interface") || className.contains("pattern")) {
+            Player2NPC.LOGGER.debug("AE2: Found interface/pattern: {}", be.getClass().getSimpleName());
+            return 2;
+        }
+
+        return 0;
     }
 
     /**
