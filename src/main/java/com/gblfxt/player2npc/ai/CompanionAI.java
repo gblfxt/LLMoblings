@@ -31,6 +31,7 @@ public class CompanionAI {
     private BlockPos targetPos = null;
     private Entity targetEntity = null;
     private MiningTask miningTask = null;
+    private AutonomousTask autonomousTask = null;
 
     public CompanionAI(CompanionEntity companion) {
         this.companion = companion;
@@ -56,6 +57,7 @@ public class CompanionAI {
             case MINING -> tickMining();
             case ATTACKING -> tickAttacking();
             case DEFENDING -> tickDefending();
+            case AUTONOMOUS -> tickAutonomous();
             case IDLE -> tickIdle();
         }
     }
@@ -109,6 +111,10 @@ public class CompanionAI {
             case "scan" -> {
                 int radius = action.getInt("radius", 32);
                 scanArea(radius);
+            }
+            case "autonomous", "independent", "survive" -> {
+                int radius = action.getInt("radius", 32);
+                startAutonomous(radius);
             }
             case "idle" -> {
                 currentState = AIState.IDLE;
@@ -242,6 +248,15 @@ public class CompanionAI {
         }
     }
 
+    private void tickAutonomous() {
+        if (autonomousTask == null) {
+            currentState = AIState.IDLE;
+            return;
+        }
+
+        autonomousTask.tick();
+    }
+
     private void tickIdle() {
         // Occasionally look around
         if (companion.getRandom().nextInt(100) == 0) {
@@ -337,6 +352,12 @@ public class CompanionAI {
         sendMessage("I'll protect you!");
     }
 
+    private void startAutonomous(int radius) {
+        autonomousTask = new AutonomousTask(companion, radius);
+        currentState = AIState.AUTONOMOUS;
+        sendMessage("Going autonomous! I'll assess the area, hunt for food, equip myself, and patrol. Tell me to 'stop' or 'follow' to return to normal.");
+    }
+
     private void retreat() {
         Player owner = companion.getOwner();
         if (owner != null) {
@@ -403,6 +424,7 @@ public class CompanionAI {
         GOING_TO,
         MINING,
         ATTACKING,
-        DEFENDING
+        DEFENDING,
+        AUTONOMOUS
     }
 }
