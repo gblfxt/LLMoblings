@@ -4,6 +4,7 @@ import com.gblfxt.player2npc.ChunkLoadingManager;
 import com.gblfxt.player2npc.Config;
 import com.gblfxt.player2npc.Player2NPC;
 import com.gblfxt.player2npc.ai.CompanionAI;
+import com.gblfxt.player2npc.compat.ArtifactsIntegration;
 import net.minecraft.core.NonNullList;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -120,6 +121,11 @@ public class CompanionEntity extends PathfinderMob implements Container {
                 autoEquipBestItems();
             }
 
+            // Check for flying artifacts (every second)
+            if (this.tickCount % 20 == 0) {
+                updateFlyingAbility();
+            }
+
             // Start/update chunk loading
             if (this.tickCount == 1) {
                 ChunkLoadingManager.startLoadingChunks(this);
@@ -127,6 +133,45 @@ public class CompanionEntity extends PathfinderMob implements Container {
                 ChunkLoadingManager.updateChunkLoading(this);
             }
         }
+
+        // Handle flying movement
+        if (canFlyWithArtifact && !this.onGround()) {
+            handleFlyingMovement();
+        }
+    }
+
+    private boolean canFlyWithArtifact = false;
+
+    private void updateFlyingAbility() {
+        boolean couldFly = canFlyWithArtifact;
+        canFlyWithArtifact = ArtifactsIntegration.canFly(this);
+
+        if (canFlyWithArtifact && !couldFly) {
+            Player2NPC.LOGGER.info("[{}] Now has flying ability from artifact!", getCompanionName());
+        } else if (!canFlyWithArtifact && couldFly) {
+            Player2NPC.LOGGER.info("[{}] Lost flying ability", getCompanionName());
+            this.setNoGravity(false);
+        }
+    }
+
+    private void handleFlyingMovement() {
+        if (!canFlyWithArtifact) return;
+
+        // Allow the companion to fly when they have a flying artifact
+        // Reduce fall damage and allow hovering
+        Vec3 motion = this.getDeltaMovement();
+
+        // Slow descent when flying
+        if (motion.y < -0.1) {
+            this.setDeltaMovement(motion.x, -0.05, motion.z);
+        }
+
+        // Don't take fall damage when we can fly
+        this.fallDistance = 0;
+    }
+
+    public boolean canFly() {
+        return canFlyWithArtifact;
     }
 
     @Override

@@ -98,7 +98,11 @@ FOOD & FARMING:
 ADVENTURE:
 - Alex's Mobs: Many new creatures (elephants, gorillas, crocodiles, etc.)
 - Alex's Caves: New cave biomes with unique mobs and loot
-- Artifacts: Special equipment with unique abilities
+- Artifacts: Special equipment with unique abilities (I can use these!)
+  * Tablet of Flying: Lets me fly! Give me one and I'll soar through the skies
+  * Cloud in a Bottle: Double jump ability
+  * Bunny Hoppers: Speed and jump boost
+  * Helium Flamingo: Another flying item
 
 === AVAILABLE ACTIONS ===
 

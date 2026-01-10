@@ -2,13 +2,16 @@ package com.gblfxt.player2npc.command;
 
 import com.gblfxt.player2npc.Config;
 import com.gblfxt.player2npc.Player2NPC;
+import com.gblfxt.player2npc.data.CompanionSaveData;
 import com.gblfxt.player2npc.entity.CompanionEntity;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.List;
@@ -74,9 +77,25 @@ public class CompanionCommand {
         companion.setOwner(player);
         companion.setPos(player.getX() + 1, player.getY(), player.getZ() + 1);
 
-        player.level().addFreshEntity(companion);
+        // Try to load saved data for this companion
+        if (player.level() instanceof ServerLevel serverLevel) {
+            CompanionSaveData saveData = CompanionSaveData.get(serverLevel);
+            CompoundTag savedData = saveData.loadCompanion(player.getUUID(), name);
+            if (savedData != null) {
+                // Load the companion's previous inventory, armor, etc.
+                companion.readAdditionalSaveData(savedData);
+                // Re-set name and owner in case they were overwritten
+                companion.setCompanionName(name);
+                companion.setOwner(player);
+                source.sendSuccess(() -> Component.literal("Welcome back, " + name + "! (Inventory restored)"), false);
+            } else {
+                source.sendSuccess(() -> Component.literal("Summoned companion '" + name + "'! Use @" + name + " <message> to talk to them."), false);
+            }
+        } else {
+            source.sendSuccess(() -> Component.literal("Summoned companion '" + name + "'! Use @" + name + " <message> to talk to them."), false);
+        }
 
-        source.sendSuccess(() -> Component.literal("Summoned companion '" + name + "'! Use @" + name + " <message> to talk to them."), false);
+        player.level().addFreshEntity(companion);
         Player2NPC.LOGGER.info("Player {} summoned companion '{}'", player.getName().getString(), name);
 
         return 1;
@@ -101,11 +120,23 @@ public class CompanionCommand {
             return 0;
         }
 
-        for (CompanionEntity companion : companions) {
-            companion.discard();
+        // Save companion data before dismissing
+        if (player.level() instanceof ServerLevel serverLevel) {
+            CompanionSaveData saveData = CompanionSaveData.get(serverLevel);
+            for (CompanionEntity companion : companions) {
+                CompoundTag data = new CompoundTag();
+                companion.addAdditionalSaveData(data);
+                data.putString("Name", companion.getCompanionName());
+                saveData.saveCompanion(player.getUUID(), companion.getCompanionName(), data);
+                companion.discard();
+            }
+        } else {
+            for (CompanionEntity companion : companions) {
+                companion.discard();
+            }
         }
 
-        source.sendSuccess(() -> Component.literal("Dismissed companion '" + name + "'."), false);
+        source.sendSuccess(() -> Component.literal("Dismissed companion '" + name + "'. (Inventory saved)"), false);
         return 1;
     }
 
@@ -129,11 +160,24 @@ public class CompanionCommand {
         }
 
         int count = companions.size();
-        for (CompanionEntity companion : companions) {
-            companion.discard();
+
+        // Save all companions before dismissing
+        if (player.level() instanceof ServerLevel serverLevel) {
+            CompanionSaveData saveData = CompanionSaveData.get(serverLevel);
+            for (CompanionEntity companion : companions) {
+                CompoundTag data = new CompoundTag();
+                companion.addAdditionalSaveData(data);
+                data.putString("Name", companion.getCompanionName());
+                saveData.saveCompanion(player.getUUID(), companion.getCompanionName(), data);
+                companion.discard();
+            }
+        } else {
+            for (CompanionEntity companion : companions) {
+                companion.discard();
+            }
         }
 
-        source.sendSuccess(() -> Component.literal("Dismissed " + count + " companion(s)."), false);
+        source.sendSuccess(() -> Component.literal("Dismissed " + count + " companion(s). (Inventory saved)"), false);
         return 1;
     }
 
