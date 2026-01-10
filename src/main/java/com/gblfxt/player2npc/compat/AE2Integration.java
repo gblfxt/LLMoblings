@@ -405,12 +405,14 @@ public class AE2Integration {
             int matchingItems = 0;
 
             while (extractedCount < maxCount && iterator.hasNext()) {
-                Object entry = iterator.next();
+                Object entryObj = iterator.next();
                 totalItemsScanned++;
 
-                // Get the key and amount
-                var getKeyMethod = entry.getClass().getMethod("getKey");
-                Object key = getKeyMethod.invoke(entry);
+                // Cast to Map.Entry to avoid module access issues with fastutil's internal classes
+                @SuppressWarnings("unchecked")
+                java.util.Map.Entry<Object, Long> entry = (java.util.Map.Entry<Object, Long>) entryObj;
+                Object key = entry.getKey();
+                long available = entry.getValue();
 
                 // Check if it's an item key
                 if (key != null && key.getClass().getName().contains("AEItemKey")) {
@@ -419,9 +421,6 @@ public class AE2Integration {
 
                     if (!stack.isEmpty() && filter.test(stack)) {
                         matchingItems++;
-                        // Try to extract
-                        var getLongValueMethod = entry.getClass().getMethod("getLongValue");
-                        long available = (long) getLongValueMethod.invoke(entry);
 
                         Player2NPC.LOGGER.info("AE2: Found matching item: {} x{}", stack.getItem(), available);
 
@@ -499,18 +498,19 @@ public class AE2Integration {
             java.util.Iterator<Object> iterator = (java.util.Iterator<Object>) iteratorObj;
 
             while (iterator.hasNext()) {
-                Object entry = iterator.next();
+                Object entryObj = iterator.next();
 
-                var getKeyMethod = entry.getClass().getMethod("getKey");
-                Object key = getKeyMethod.invoke(entry);
+                // Cast to Map.Entry to avoid module access issues with fastutil's internal classes
+                @SuppressWarnings("unchecked")
+                java.util.Map.Entry<Object, Long> entry = (java.util.Map.Entry<Object, Long>) entryObj;
+                Object key = entry.getKey();
+                long amount = entry.getValue();
 
                 if (key != null && key.getClass().getName().contains("AEItemKey")) {
                     var toStackMethod = key.getClass().getMethod("toStack");
                     ItemStack stack = (ItemStack) toStackMethod.invoke(key);
 
                     if (!stack.isEmpty() && filter.test(stack)) {
-                        var getLongValueMethod = entry.getClass().getMethod("getLongValue");
-                        long amount = (long) getLongValueMethod.invoke(entry);
                         stack.setCount((int) Math.min(amount, stack.getMaxStackSize()));
                         items.add(stack);
                     }
