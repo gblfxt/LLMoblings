@@ -663,27 +663,33 @@ public class CompanionAI {
 
     private void requestTeleport(String targetPlayer) {
         if (targetPlayer == null || targetPlayer.isEmpty()) {
-            sendMessage("Who should I teleport to? Tell me their name.");
+            // Default to teleporting to whoever gave the command
+            Player target = (commandGiver != null && commandGiver.isAlive()) ? commandGiver : companion.getOwner();
+            if (target != null) {
+                teleportToPlayer(target);
+            } else {
+                sendMessage("Who should I teleport to? Tell me their name.");
+            }
             return;
         }
 
         if (companion.level() instanceof ServerLevel serverLevel) {
-            try {
-                String command = "tpa " + targetPlayer;
-                serverLevel.getServer().getCommands().performPrefixedCommand(
-                        serverLevel.getServer().createCommandSourceStack()
-                                .withEntity(companion)
-                                .withPosition(companion.position())
-                                .withPermission(2),
-                        command
-                );
-                sendMessage("Sent teleport request to " + targetPlayer + "!");
-                Player2NPC.LOGGER.info("[{}] Sent TPA request to {}", companion.getCompanionName(), targetPlayer);
-            } catch (Exception e) {
-                sendMessage("I couldn't send the teleport request. The server might not support this command.");
-                Player2NPC.LOGGER.warn("[{}] TPA command failed: {}", companion.getCompanionName(), e.getMessage());
+            // Find the target player by name
+            Player target = serverLevel.getServer().getPlayerList().getPlayerByName(targetPlayer);
+            if (target != null) {
+                teleportToPlayer(target);
+            } else {
+                sendMessage("I can't find a player named " + targetPlayer + ".");
+                Player2NPC.LOGGER.info("[{}] Could not find player {} for TPA", companion.getCompanionName(), targetPlayer);
             }
         }
+    }
+
+    private void teleportToPlayer(Player target) {
+        Vec3 targetPos = target.position();
+        companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
+        sendMessage("Teleported to " + target.getName().getString() + "!");
+        Player2NPC.LOGGER.info("[{}] Teleported to player {}", companion.getCompanionName(), target.getName().getString());
     }
 
     private void acceptTeleport() {
