@@ -64,6 +64,10 @@ public class CompanionEntity extends PathfinderMob implements Container {
             groundNav.setCanOpenDoors(true);
             groundNav.setCanPassDoors(true);
         }
+
+        // Add player tag so ethereal glass and similar blocks allow passage
+        this.addTag("player");
+        this.addTag("Player");
     }
 
     @Override
