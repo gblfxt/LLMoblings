@@ -145,9 +145,10 @@ public class CompanionCommand {
             return 0;
         }
 
+        // Search wide area for companions (much larger than before)
         List<CompanionEntity> companions = player.level().getEntitiesOfClass(
                 CompanionEntity.class,
-                player.getBoundingBox().inflate(256),
+                player.getBoundingBox().inflate(10000),  // Search very large area
                 c -> c.isOwner(player)
         );
 
@@ -160,10 +161,15 @@ public class CompanionCommand {
         for (CompanionEntity companion : companions) {
             String state = companion.getAIController() != null ?
                     companion.getAIController().getCurrentState().name() : "UNKNOWN";
+            double dist = player.distanceTo(companion);
             sb.append(" - ").append(companion.getCompanionName())
                     .append(" (").append(state).append(")")
                     .append(" HP: ").append((int) companion.getHealth())
                     .append("/").append((int) companion.getMaxHealth())
+                    .append(" at [").append((int) companion.getX())
+                    .append(", ").append((int) companion.getY())
+                    .append(", ").append((int) companion.getZ()).append("]")
+                    .append(" (").append((int) dist).append("m away)")
                     .append("\n");
         }
 

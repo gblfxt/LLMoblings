@@ -94,19 +94,30 @@ public class AE2Integration {
 
             // Use reflection to access AE2's grid system
             Object grid = getGridFromBlockEntity(be);
-            if (grid == null) return extracted;
+            if (grid == null) {
+                Player2NPC.LOGGER.info("AE2: Could not get grid from block entity at {}", accessPoint);
+                return extracted;
+            }
 
             Object storageService = getStorageService(grid);
-            if (storageService == null) return extracted;
+            if (storageService == null) {
+                Player2NPC.LOGGER.info("AE2: Could not get storage service from grid");
+                return extracted;
+            }
 
             Object inventory = getInventory(storageService);
-            if (inventory == null) return extracted;
+            if (inventory == null) {
+                Player2NPC.LOGGER.info("AE2: Could not get inventory from storage service");
+                return extracted;
+            }
 
             // Get available stacks and extract matching ones
             extracted = extractMatchingItems(inventory, filter, maxCount);
+            Player2NPC.LOGGER.info("AE2: Extracted {} item stacks from ME network", extracted.size());
 
         } catch (Exception e) {
-            Player2NPC.LOGGER.debug("Error extracting from ME network: {}", e.getMessage());
+            Player2NPC.LOGGER.warn("Error extracting from ME network: {}", e.getMessage());
+            e.printStackTrace();
         }
 
         return extracted;

@@ -19,6 +19,8 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.goal.OpenDoorGoal;
+import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
@@ -56,6 +58,19 @@ public class CompanionEntity extends PathfinderMob implements Container {
         if (!level.isClientSide) {
             this.aiController = new CompanionAI(this);
         }
+
+        // Enable door opening in navigation
+        if (this.getNavigation() instanceof GroundPathNavigation groundNav) {
+            groundNav.setCanOpenDoors(true);
+            groundNav.setCanPassDoors(true);
+        }
+    }
+
+    @Override
+    protected void registerGoals() {
+        super.registerGoals();
+        // Allow companion to open and close doors
+        this.goalSelector.addGoal(1, new OpenDoorGoal(this, true));
     }
 
     public static AttributeSupplier.Builder createAttributes() {
@@ -86,6 +101,11 @@ public class CompanionEntity extends PathfinderMob implements Container {
 
             // Item pickup
             pickupItems();
+
+            // Auto-eat when health is low (every 2 seconds)
+            if (this.tickCount % 40 == 0) {
+                tryEatFood();
+            }
 
             // Start/update chunk loading
             if (this.tickCount == 1) {
@@ -153,6 +173,49 @@ public class CompanionEntity extends PathfinderMob implements Container {
         return stack;
     }
 
+    /**
+     * Try to eat food from inventory when health is low.
+     */
+    private void tryEatFood() {
+        // Only eat if health is below 75%
+        if (this.getHealth() >= this.getMaxHealth() * 0.75f) {
+            return;
+        }
+
+        // Find food in inventory
+        for (int i = 0; i < inventory.size(); i++) {
+            ItemStack stack = inventory.get(i);
+            if (stack.isEmpty()) continue;
+
+            var foodProps = stack.getItem().getFoodProperties(stack, this);
+            if (foodProps != null) {
+                // Eat the food
+                float healAmount = foodProps.nutrition() * 0.5f;  // Half nutrition as health
+                this.heal(healAmount);
+
+                // Consume one item
+                stack.shrink(1);
+                if (stack.isEmpty()) {
+                    inventory.set(i, ItemStack.EMPTY);
+                }
+
+                // Play eating sound and particles
+                this.playSound(net.minecraft.sounds.SoundEvents.GENERIC_EAT, 0.5f, 1.0f);
+
+                // Notify owner
+                Player owner = getOwner();
+                if (owner != null) {
+                    owner.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                            "[" + getCompanionName() + "] *eats " + stack.getItem().getDescription().getString() + "* Healed " + (int) healAmount + " HP!"
+                    ));
+                }
+
+                Player2NPC.LOGGER.debug("{} ate {} and healed {} HP", getCompanionName(), stack.getItem(), healAmount);
+                break;  // Only eat one item per check
+            }
+        }
+    }
+
     @Override
     public boolean hurt(DamageSource source, float amount) {
         // If damage is disabled, companions are invulnerable
@@ -205,6 +268,12 @@ public class CompanionEntity extends PathfinderMob implements Container {
 
     public String getCompanionName() {
         return this.entityData.get(DATA_NAME);
+    }
+
+    @Override
+    public Component getName() {
+        String name = getCompanionName();
+        return name.isEmpty() ? super.getName() : Component.literal(name);
     }
 
     @Override
@@ -262,6 +331,10 @@ public class CompanionEntity extends PathfinderMob implements Container {
 
     @Override
     public void setItemSlot(EquipmentSlot slot, ItemStack stack) {
+        // Store old item for sync notification
+        ItemStack oldItem = getItemBySlot(slot);
+
+        // Set the new item
         switch (slot) {
             case MAINHAND -> inventory.set(selectedSlot, stack);
             case OFFHAND -> offhandItem = stack;
@@ -270,6 +343,9 @@ public class CompanionEntity extends PathfinderMob implements Container {
             case LEGS -> armorSlots.set(1, stack);
             case FEET -> armorSlots.set(0, stack);
         }
+
+        // Trigger equipment change sync to clients
+        this.onEquipItem(slot, oldItem, stack);
     }
 
     @Override
@@ -282,10 +358,24 @@ public class CompanionEntity extends PathfinderMob implements Container {
         return aiController;
     }
 
-    // Process chat message from owner
+    // Process chat message from any player
     public void onChatMessage(Player sender, String message) {
-        if (aiController != null && isOwner(sender)) {
-            aiController.processMessage(message);
+        onChatMessage(sender, message, isOwner(sender));
+    }
+
+    // Process chat message with explicit owner flag
+    public void onChatMessage(Player sender, String message, boolean isOwner) {
+        if (aiController != null) {
+            Player2NPC.LOGGER.info("[{}] Processing message from {} (owner={}): {}",
+                    getCompanionName(), sender.getName().getString(), isOwner, message);
+
+            if (isOwner) {
+                // Owner can give any command
+                aiController.processMessage(message);
+            } else {
+                // Non-owner can interact but with limited commands
+                aiController.processMessageFromStranger(sender, message);
+            }
         }
     }
 

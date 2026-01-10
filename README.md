@@ -1,110 +1,151 @@
-# Player2NPC: A Demonstration of the PlayerEngine Framework
+# Player2NPC - AI Companions for Minecraft
 
-[![Player2 AI Game Jam](https://img.shields.io/badge/Player2-AI_Game_Jam-blueviolet)](https://itch.io/jam/ai-npc-jam)
-[![Powered by PlayerEngine](https://img.shields.io/badge/Powered%20by-PlayerEngine-orange)](https://github.com/Ladysnake/Automatone/tree/1.20)
+An AI-powered companion mod for NeoForge 1.21.1 that creates intelligent NPCs you can command using natural language. Companions are powered by Ollama LLM and can perform a wide variety of tasks autonomously.
 
-Welcome to Player2NPC. This is not just another companion mod; it is a live showcase of the **PlayerEngine** framework, built to fundamentally change our perception of AI NPCs in Minecraft.
+## Features
 
-This mod was developed by **Goodbird** exclusively for the **Player2 AI Game Jam**, serving as a prime example of how effortlessly developers can create truly embodied and interactive AI agents when equipped with the right tools.
+### Natural Language Commands
+Talk to your companions using the `@` prefix in chat:
+- `@Godot follow me` - Companion follows you
+- `@Godot get me some wood` - Companion gathers resources
+- `@Godot attack that zombie` - Companion fights mobs
+- `@Godot go autonomous` - Companion operates independently
 
-## What Does This Mod Do?
+### Autonomous Behavior
+Companions can operate independently when set to autonomous mode:
+- **Hunt** for food when hungry
+- **Equip** weapons and armor from inventory
+- **Patrol** the area for threats
+- **Explore** your base
+- **Store** excess items in nearby chests
+- **Retrieve** items from AE2 ME networks (if available)
 
-Player2NPC allows you to summon AI companions into your world, driven by the **Player2 API**. Unlike other solutions, our companions are not player-bots running on separate game clients. They are fully independent, server-side entities brought to life by PlayerEngine.
+### Personality System
+Companions have personalities with:
+- Random idle chatter based on situation
+- Environmental comments (weather, time of day)
+- Combat callouts
+- Task completion celebrations
+- Emotes with particle effects
 
-*   **Press 'H'** to open the character selection menu.
-*   **Choose a companion** with a unique personality and appearance.
-*   **Summon them into your world** and interact with them using natural language in chat.
-*   **Give them tasks:** ask them to gather resources ("*can you get me 10 wood?*"), attack mobs ("*take care of that zombie!*"), or simply follow you ("*stick with me*").
+### Multi-Player Support
+- Other players can talk to companions (configurable)
+- Non-owners get friendly chat responses but can't give commands
+- Companions remember who their owner is
 
-You will witness an AI agent that doesn't just respond with text but **acts** within the world, using its inventory and interacting with blocks almost like a real player, all driven by the LLM's understanding of your request.
+### Home & Bed Commands
+- `setbed` - Find and remember nearby bed location
+- `sethome` - Set current location as home
+- `home` - Return to home/bed location
+- `sleep` - Attempt to sleep in bed at night
 
-## Under the Hood: The Magic of `AutomatoneEntity.java`
+### Mod Compatibility
+- **AE2/Applied Energistics 2**: Companions can access ME networks for items
+- **Various Storage Mods**: Detects chests, barrels, shulker boxes, drawers, metal chests, crates, sophisticated storage
 
-The power of this mod is showcased in a single class: `AutomatoneEntity`. It serves as the perfect example of how simple PlayerEngine makes it to create complex AI agents. This class is not a hack or a workaround; it's an elegant implementation of the framework's core principles.
+## Commands
 
-### 1. Implementing the Core Interfaces
-
-To transform an ordinary mob into a "player," you only need to implement a few interfaces from PlayerEngine. This is the foundation of our approach.
-
-```java
-public class AutomatoneEntity extends LivingEntity implements IAutomatone, IInventoryProvider, IInteractionManagerProvider, IHungerManagerProvider {
-    // ...
-}
+### In-Game Commands
 ```
-*   **`IAutomatone`**: A marker that allows PlayerEngine to recognize this entity as a controllable AI agent.
-*   **`IInventoryProvider`**: Grants our mob a full, persistent, player-like inventory.
-*   **`IInteractionManagerProvider`**: Empowers the mob with the ability to break/place blocks and use items.
-*   **`IHungerManagerProvider`**: Provides a hunger system. While ticking its logic is optional, implementing the interface is part of the core design for full player-like capability.
-
-### 2. Simple Initialization in `init()`
-
-In our mob's constructor, we just instantiate the standard implementations provided by PlayerEngine. No complex boilerplate is required.
-
-```java
-public void init() {
-    // Provide standard implementations from PlayerEngine
-    manager = new LivingEntityInteractionManager(this);
-    inventory = new LivingEntityInventory(this);
-    hungerManager = new LivingEntityHungerManager();
-    
-    // And most importantly, connect the "brain"
-    if (!getWorld().isClient) {
-        controller = new AltoClefController(IBaritone.KEY.get(this));
-        controller.getAiBridge().setPlayer2GameId(PLAYER2_GAME_ID);
-        if (character != null) {
-            controller.getAiBridge().sendGreeting(character);
-        }
-    }
-}
+/companion summon <name>  - Summon a new companion
+/companion dismiss <name> - Dismiss a specific companion
+/companion dismiss        - Dismiss all your companions
+/companion list           - List your companions with status
+/companion help           - Show help
 ```
-The `AltoClefController` is the agent's core. It receives high-level commands (interpreted from natural language by the Player2 API) and translates them into concrete actions in the world using Automatone's navigation.
 
-### 3. The Secret Sauce: Modular Capabilities with Cardinal Components
+### Chat Commands (via @prefix)
+**Movement:**
+- `follow` - Follow the player
+- `stay` / `stop` - Stop and stay in place
+- `come` - Come to player's location
+- `goto <x> <y> <z>` - Go to coordinates
 
-PlayerEngine's true power lies in its modularity, made possible by **Cardinal Components**. Instead of hardcoding player abilities into one entity, we attach them like building blocks. This is where the framework truly shines for modders.
+**Actions:**
+- `mine <block> <count>` - Mine specific blocks
+- `gather <item> <count>` - Gather items
+- `attack <target>` - Attack specific mob type
+- `defend` - Defend player from hostiles
+- `retreat` - Run to player
 
-The `Player2NPCComponents.java` class shows how simple this is:
+**Utility:**
+- `status` - Report health and inventory
+- `scan <radius>` - Scan for mobs/resources
+- `autonomous` - Go fully independent
+- `explore` - Explore the area
 
-```java
-@KeepName
-public final class Player2NPCComponents implements EntityComponentInitializer, WorldComponentInitializer {
+**Home:**
+- `setbed` - Remember nearby bed
+- `sethome` - Set home at current location
+- `home` - Return to home
+- `sleep` - Try to sleep
 
-    @Override
-    public void registerEntityComponentFactories(EntityComponentFactoryRegistry registry) {
-        // ... standard player components
+## Configuration
 
-        // This is where the magic happens for our custom mob:
-        registry.registerFor(AutomatoneEntity.class, IInteractionController.KEY, EntityInteractionController::new);
-        registry.registerFor(AutomatoneEntity.class, ISelectionManager.KEY, SelectionManager::new);
-        registry.registerFor(AutomatoneEntity.class, IBaritone.KEY, BaritoneAPI.getProvider().componentFactory());
-    }
-    // ...
-}
+Config file: `config/player2npc-common.toml`
+
+### Ollama Settings
+```toml
+[ollama]
+host = "192.168.70.24"  # Ollama server IP
+port = 11434            # Ollama port
+model = "llama3:8b"     # Model to use
+timeout = 30            # Request timeout (seconds)
 ```
-With these few lines, we are telling the game: *"Any time you see our `AutomatoneEntity`, attach these standard player systems to it."* This approach means **any modder can make their custom mob player-like by simply registering these components for their entity class.** No mixins, no complex inheritance required. It's clean, compatible, and incredibly powerful.
 
-### 4. The AI Control Loop
+### Companion Settings
+```toml
+[companion]
+maxPerPlayer = 3              # Max companions per player
+takeDamage = true             # Companions can be hurt
+needFood = false              # Hunger system (not implemented)
+followDistance = 5.0          # Default follow distance
+itemPickupRadius = 3          # Item pickup range
+loadChunks = true             # Force-load companion's chunk
+```
 
-When you speak to a companion, a seamless process unfolds:
-1.  **Player says:** "*Hey, can you get me some logs?*"
-2.  **Player2 API (LLM)** processes this natural language and generates a command: `get oak_log 10`
-3.  **PlayerEngine's `AltoClefController`** receives this command.
-4.  The controller's task system creates and executes a `MineAndCollectTask`.
-5.  The **`AutomatoneEntity`** carries out the actions in the world, guided by Automatone's pathfinding.
+### Chat Settings
+```toml
+[chat]
+prefix = "@"                          # Chat prefix to address companions
+broadcastChat = true                  # Broadcast responses to nearby players
+allowOtherPlayerInteraction = true    # Let non-owners chat with companions
+```
 
-## Why This is "Beyond an AI Gimmick"
+## Requirements
 
-This mod, powered by PlayerEngine, directly addresses the AI Game Jam's core theme:
+- Minecraft 1.21.1
+- NeoForge 21.1.x
+- Ollama server running with a compatible model (llama3:8b recommended)
 
-*   **Integration:** The AI is not a chatbot in a box. It is a systemic part of the game, capable of altering the world and participating in the core gameplay loop of survival and resource gathering.
-*   **Guardrails:** PlayerEngine *is* the guardrail. It provides a deterministic, game-logic-based action layer that reliably executes the high-level goals from an LLM.
-*   **Creativity:** It empowers other creators. We're not just showing one cool NPC; we're giving the entire community a tool to build their own intelligent companions and adversaries.
-*   **Stability:** Built on the shoulders of giants—Baritone and Cardinal Components—PlayerEngine provides a stable and performant foundation for ambitious AI projects.
+## Installation
 
-## Acknowledgements
+1. Install NeoForge 1.21.1
+2. Place `player2npc-2.0.0.jar` in your mods folder
+3. Configure Ollama connection in config file
+4. Start the server/game
 
-*   **PlayerEngine & Player2NPC Mod by Goodbird:** The framework and this demonstration were developed by Goodbird.
-*   **Player2 API:** For providing the intelligent "brain" that powers our AI companions.
-*   **Automatone/Baritone:** For the best-in-class navigation system.
-*   **ChatClef:** For the inspiration and foundational task system.
-*   A special thanks to **Itsuka** for invaluable guidance with the Player2 API, brainstorming, and rigorous testing.
+## Troubleshooting
+
+### Companion not responding
+- Check Ollama server is running and accessible
+- Verify config has correct host/port
+- Check server logs for connection errors
+
+### Companion getting stuck
+- Companions have stuck detection - they'll give up after ~6-9 seconds
+- Try commanding them to `come` to you
+- Check logs for pathfinding issues
+
+### Logs
+The mod logs to `logs/latest.log` with prefix `[Player2NPC]`:
+- INFO level: State changes, commands received, actions taken
+- DEBUG level: Detailed pathfinding, inventory operations
+
+## License
+
+MIT License - See LICENSE file for details.
+
+## Credits
+
+Developed for the gblfxt modpack by critic/gblfxt.

@@ -36,6 +36,12 @@ public class AutonomousTask {
     private BlockPos meAccessPoint = null;  // AE2 ME network access
     private net.minecraft.world.entity.Entity huntTarget = null;
     private BlockPos homePos = null;
+    private BlockPos exploreTarget = null;
+    private final List<BlockPos> visitedLocations = new ArrayList<>();
+
+    // Stuck detection
+    private Vec3 lastPosition = null;
+    private int stuckTicks = 0;
 
     // Resource tracking
     private final Map<String, Integer> baseResources = new HashMap<>();
@@ -50,6 +56,8 @@ public class AutonomousTask {
         GATHERING,      // Mining/gathering resources
         EQUIPPING,      // Equipping armor/weapons
         STORING,        // Depositing items in chests
+        RETRIEVING_ME,  // Going to ME terminal for items
+        EXPLORING,      // Wandering and exploring the base
         PATROLLING,     // Guarding the area
         RESTING         // Idle near base
     }
@@ -58,6 +66,14 @@ public class AutonomousTask {
         this.companion = companion;
         this.baseRadius = baseRadius;
         this.homePos = companion.blockPosition();
+    }
+
+    /**
+     * Set the task to start in exploring mode directly.
+     */
+    public void setExploring() {
+        this.currentState = AutonomousState.EXPLORING;
+        this.ticksInState = 0;
     }
 
     public void tick() {
@@ -70,6 +86,8 @@ public class AutonomousTask {
             case GATHERING -> tickGathering();
             case EQUIPPING -> tickEquipping();
             case STORING -> tickStoring();
+            case RETRIEVING_ME -> tickRetrievingME();
+            case EXPLORING -> tickExploring();
             case PATROLLING -> tickPatrolling();
             case RESTING -> tickResting();
         }
@@ -145,18 +163,73 @@ public class AutonomousTask {
     private List<BlockPos> findStorageContainers() {
         List<BlockPos> containers = new ArrayList<>();
         BlockPos center = companion.blockPosition();
+        Map<String, Integer> storageTypes = new HashMap<>();
 
         for (int x = -baseRadius; x <= baseRadius; x++) {
             for (int y = -5; y <= 5; y++) {
                 for (int z = -baseRadius; z <= baseRadius; z++) {
                     BlockPos pos = center.offset(x, y, z);
                     BlockEntity be = companion.level().getBlockEntity(pos);
-                    if (be instanceof ChestBlockEntity || be instanceof BarrelBlockEntity) {
-                        containers.add(pos);
+
+                    // Check for various storage types
+                    if (be instanceof Container) {
+                        String blockName = companion.level().getBlockState(pos).getBlock().getName().getString().toLowerCase();
+
+                        // Vanilla storage
+                        if (be instanceof ChestBlockEntity) {
+                            containers.add(pos);
+                            storageTypes.merge("Chests", 1, Integer::sum);
+                        } else if (be instanceof BarrelBlockEntity) {
+                            containers.add(pos);
+                            storageTypes.merge("Barrels", 1, Integer::sum);
+                        }
+                        // Shulker boxes
+                        else if (blockName.contains("shulker")) {
+                            containers.add(pos);
+                            storageTypes.merge("Shulker Boxes", 1, Integer::sum);
+                        }
+                        // Storage Drawers mod
+                        else if (blockName.contains("drawer")) {
+                            containers.add(pos);
+                            storageTypes.merge("Drawers", 1, Integer::sum);
+                        }
+                        // Iron Chests / variants
+                        else if (blockName.contains("iron_chest") || blockName.contains("gold_chest") ||
+                                 blockName.contains("diamond_chest") || blockName.contains("obsidian_chest")) {
+                            containers.add(pos);
+                            storageTypes.merge("Metal Chests", 1, Integer::sum);
+                        }
+                        // Crates
+                        else if (blockName.contains("crate")) {
+                            containers.add(pos);
+                            storageTypes.merge("Crates", 1, Integer::sum);
+                        }
+                        // Sophisticated Storage
+                        else if (blockName.contains("sophisticated")) {
+                            containers.add(pos);
+                            storageTypes.merge("Sophisticated Storage", 1, Integer::sum);
+                        }
+                        // Generic fallback for any other container
+                        else if (((Container) be).getContainerSize() > 0) {
+                            containers.add(pos);
+                            storageTypes.merge("Other Storage", 1, Integer::sum);
+                        }
                     }
                 }
             }
         }
+
+        // Report what storage was found
+        if (!storageTypes.isEmpty()) {
+            StringBuilder sb = new StringBuilder("Found storage: ");
+            storageTypes.forEach((type, count) -> sb.append(count).append(" ").append(type).append(", "));
+            String report = sb.toString();
+            if (report.endsWith(", ")) {
+                report = report.substring(0, report.length() - 2);
+            }
+            report(report);
+        }
+
         return containers;
     }
 
@@ -210,13 +283,9 @@ public class AutonomousTask {
             needs.add("food");
 
             // Try to get food from ME network first
-            if (meAccessPoint != null && tryGetFoodFromME()) {
-                assessSelf();  // Re-check food count
-                if (foodCount >= 5) {
-                    report("Got food from the ME network!");
-                    changeState(AutonomousState.ASSESSING);
-                    return;
-                }
+            if (meAccessPoint != null) {
+                changeState(AutonomousState.RETRIEVING_ME);
+                return;
             }
 
             // Fall back to hunting
@@ -230,9 +299,20 @@ public class AutonomousTask {
             return;
         }
 
-        // Priority 4: Patrol if well-equipped
+        // Priority 4: Patrol or explore
         if (hasWeapon) {
-            changeState(AutonomousState.PATROLLING);
+            // Alternate between patrolling and exploring
+            if (companion.getRandom().nextInt(3) == 0) {
+                changeState(AutonomousState.EXPLORING);
+            } else {
+                changeState(AutonomousState.PATROLLING);
+            }
+            return;
+        }
+
+        // Priority 5: Explore the base even without weapon
+        if (companion.getRandom().nextInt(2) == 0) {
+            changeState(AutonomousState.EXPLORING);
             return;
         }
 
@@ -263,11 +343,16 @@ public class AutonomousTask {
                 16  // Get up to 16 food items
         );
 
+        Player2NPC.LOGGER.info("AE2 food extraction returned {} stacks", food.size());
+
         if (!food.isEmpty()) {
             int totalFood = 0;
             for (ItemStack stack : food) {
+                Player2NPC.LOGGER.info("Adding {} x {} to inventory", stack.getCount(), stack.getItem());
                 ItemStack remaining = companion.addToInventory(stack);
-                totalFood += stack.getCount() - remaining.getCount();
+                int added = stack.getCount() - remaining.getCount();
+                totalFood += added;
+                Player2NPC.LOGGER.info("Added {} items, {} remaining", added, remaining.getCount());
             }
             if (totalFood > 0) {
                 report("Retrieved " + totalFood + " food from ME network.");
@@ -307,6 +392,8 @@ public class AutonomousTask {
         if (ticksInState == 1) {
             report("Hunting for food...");
             huntTarget = findHuntTarget();
+            lastPosition = companion.position();
+            stuckTicks = 0;
         }
 
         if (huntTarget == null || !huntTarget.isAlive()) {
@@ -318,12 +405,36 @@ public class AutonomousTask {
             }
         }
 
+        // Check if stuck (hasn't moved much in 3 seconds)
+        if (ticksInState % 60 == 0) {
+            Vec3 currentPos = companion.position();
+            if (lastPosition != null && currentPos.distanceTo(lastPosition) < 1.0) {
+                stuckTicks += 60;
+                if (stuckTicks > 120) {  // Stuck for 6+ seconds
+                    report("Can't reach that animal, finding another...");
+                    huntTarget = null;  // Give up on this target
+                    stuckTicks = 0;
+
+                    // Try to unstick by jumping or recalculating
+                    if (companion.onGround()) {
+                        companion.setDeltaMovement(companion.getDeltaMovement().add(0, 0.4, 0));
+                    }
+                    companion.getNavigation().stop();
+                    return;
+                }
+            } else {
+                stuckTicks = 0;  // Reset if we moved
+            }
+            lastPosition = currentPos;
+        }
+
         double distance = companion.distanceTo(huntTarget);
 
         if (distance < 2.5) {
             // Attack
             companion.doHurtTarget(huntTarget);
             companion.swing(companion.getUsedItemHand());
+            stuckTicks = 0;  // We're attacking, not stuck
 
             if (!huntTarget.isAlive()) {
                 report("Got one!");
@@ -335,8 +446,10 @@ public class AutonomousTask {
                 }
             }
         } else {
-            // Chase
-            companion.getNavigation().moveTo(huntTarget, 1.2);
+            // Chase - recalculate path periodically
+            if (ticksInState % 20 == 0 || companion.getNavigation().isDone()) {
+                companion.getNavigation().moveTo(huntTarget, 1.2);
+            }
         }
 
         // Timeout
@@ -479,6 +592,196 @@ public class AutonomousTask {
         }
     }
 
+    private void tickRetrievingME() {
+        if (meAccessPoint == null) {
+            report("Lost track of the ME terminal...");
+            changeState(AutonomousState.HUNTING);  // Fall back to hunting
+            return;
+        }
+
+        if (ticksInState == 1) {
+            report("Going to the ME terminal for food...");
+            lastPosition = companion.position();
+            stuckTicks = 0;
+        }
+
+        double distance = companion.position().distanceTo(Vec3.atCenterOf(meAccessPoint));
+
+        // Check if stuck
+        if (ticksInState % 60 == 0 && ticksInState > 60) {
+            Vec3 currentPos = companion.position();
+            if (lastPosition != null && currentPos.distanceTo(lastPosition) < 1.0) {
+                stuckTicks += 60;
+                if (stuckTicks > 180) {  // Stuck for 9+ seconds
+                    report("Can't reach the ME terminal, going hunting instead...");
+                    stuckTicks = 0;
+                    changeState(AutonomousState.HUNTING);
+                    return;
+                }
+            } else {
+                stuckTicks = 0;
+            }
+            lastPosition = currentPos;
+        }
+
+        if (distance > 3.0) {
+            // Navigate to ME point
+            if (ticksInState % 20 == 0 || companion.getNavigation().isDone()) {
+                companion.getNavigation().moveTo(
+                        meAccessPoint.getX() + 0.5,
+                        meAccessPoint.getY(),
+                        meAccessPoint.getZ() + 0.5,
+                        1.0
+                );
+            }
+        } else {
+            // Close enough - try to extract food
+            List<ItemStack> food = AE2Integration.extractItems(
+                    companion.level(),
+                    meAccessPoint,
+                    stack -> stack.getItem().getFoodProperties(stack, companion) != null,
+                    16
+            );
+
+            if (!food.isEmpty()) {
+                int totalFood = 0;
+                for (ItemStack stack : food) {
+                    ItemStack remaining = companion.addToInventory(stack);
+                    totalFood += stack.getCount() - remaining.getCount();
+                }
+                if (totalFood > 0) {
+                    report("Retrieved " + totalFood + " food from ME network!");
+                    assessSelf();
+                    changeState(AutonomousState.ASSESSING);
+                    return;
+                }
+            }
+
+            // ME didn't have food or extraction failed
+            report("Couldn't get food from ME network, going hunting...");
+            changeState(AutonomousState.HUNTING);
+        }
+
+        // Timeout
+        if (ticksInState > 400) {
+            report("Taking too long to reach ME terminal...");
+            changeState(AutonomousState.HUNTING);
+        }
+    }
+
+    private void tickExploring() {
+        if (ticksInState == 1) {
+            report("Exploring the base...");
+        }
+
+        // Choose a new exploration target if we don't have one or reached it
+        if (exploreTarget == null || companion.position().distanceTo(Vec3.atCenterOf(exploreTarget)) < 2.0) {
+            exploreTarget = findExplorationTarget();
+            if (exploreTarget != null) {
+                visitedLocations.add(exploreTarget);
+                // Keep visited list manageable
+                if (visitedLocations.size() > 50) {
+                    visitedLocations.remove(0);
+                }
+            }
+        }
+
+        // Navigate to exploration target
+        if (exploreTarget != null && companion.getNavigation().isDone()) {
+            companion.getNavigation().moveTo(
+                    exploreTarget.getX() + 0.5,
+                    exploreTarget.getY(),
+                    exploreTarget.getZ() + 0.5,
+                    0.7  // Walk speed for exploring
+            );
+        }
+
+        // Look around occasionally
+        if (ticksInState % 40 == 0) {
+            companion.setYRot(companion.getYRot() + (companion.getRandom().nextFloat() - 0.5F) * 60);
+        }
+
+        // Comment on interesting things found
+        if (ticksInState % 200 == 0 && companion.getRandom().nextInt(3) == 0) {
+            String[] explorationComments = {
+                "Interesting layout here...",
+                "*looks around curiously*",
+                "I should remember this spot.",
+                "Nice place you've got here!",
+                "What's over here?",
+                "*examines surroundings*"
+            };
+            report(explorationComments[companion.getRandom().nextInt(explorationComments.length)]);
+        }
+
+        // Transition to other states periodically
+        if (ticksInState > 400) {
+            changeState(AutonomousState.ASSESSING);
+        }
+    }
+
+    private BlockPos findExplorationTarget() {
+        // Try to find interesting locations: doors, containers, unexplored areas
+        BlockPos currentPos = companion.blockPosition();
+        BlockPos bestTarget = null;
+        double bestScore = -1;
+
+        for (int attempt = 0; attempt < 10; attempt++) {
+            // Random position within base radius
+            int offsetX = companion.getRandom().nextInt(baseRadius * 2) - baseRadius;
+            int offsetZ = companion.getRandom().nextInt(baseRadius * 2) - baseRadius;
+            BlockPos candidate = currentPos.offset(offsetX, 0, offsetZ);
+
+            // Find ground level
+            BlockPos groundCandidate = candidate;
+            for (int y = 5; y >= -5; y--) {
+                BlockPos check = candidate.offset(0, y, 0);
+                if (companion.level().getBlockState(check).isAir() &&
+                    !companion.level().getBlockState(check.below()).isAir()) {
+                    groundCandidate = check;
+                    break;
+                }
+            }
+            final BlockPos finalCandidate = groundCandidate;
+
+            // Score this location
+            double score = 0;
+
+            // Prefer unvisited locations
+            boolean visited = visitedLocations.stream()
+                    .anyMatch(pos -> pos.distSqr(finalCandidate) < 25);  // Within 5 blocks
+            if (!visited) {
+                score += 50;
+            }
+
+            // Prefer locations with interesting blocks nearby (chests, doors, etc.)
+            for (int dx = -3; dx <= 3; dx++) {
+                for (int dz = -3; dz <= 3; dz++) {
+                    BlockPos nearby = finalCandidate.offset(dx, 0, dz);
+                    String blockName = companion.level().getBlockState(nearby).getBlock().getName().getString().toLowerCase();
+                    if (blockName.contains("door") || blockName.contains("chest") ||
+                        blockName.contains("furnace") || blockName.contains("crafting") ||
+                        blockName.contains("enchant") || blockName.contains("anvil")) {
+                        score += 10;
+                    }
+                }
+            }
+
+            // Prefer moderate distance (not too close, not too far)
+            double distance = finalCandidate.distSqr(currentPos);
+            if (distance > 9 && distance < 400) {  // 3-20 blocks
+                score += 20;
+            }
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestTarget = finalCandidate;
+            }
+        }
+
+        return bestTarget;
+    }
+
     private void tickPatrolling() {
         if (ticksInState == 1) {
             report("Patrolling the area...");
@@ -556,12 +859,13 @@ public class AutonomousTask {
     }
 
     private void changeState(AutonomousState newState) {
-        Player2NPC.LOGGER.debug("Autonomous state: {} -> {}", currentState, newState);
+        Player2NPC.LOGGER.info("[{}] Autonomous state: {} -> {}", companion.getCompanionName(), currentState, newState);
         currentState = newState;
         ticksInState = 0;
     }
 
     private void report(String message) {
+        Player2NPC.LOGGER.info("[{}] {}", companion.getCompanionName(), message);
         if (companion.getOwner() != null) {
             companion.getOwner().sendSystemMessage(
                     net.minecraft.network.chat.Component.literal("[" + companion.getCompanionName() + "] " + message)

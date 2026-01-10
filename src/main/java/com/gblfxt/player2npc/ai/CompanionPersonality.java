@@ -148,9 +148,14 @@ public class CompanionPersonality {
             mood = "content";
         }
 
-        // Random chance for idle behavior
-        if (random.nextInt(2000) == 0) {  // ~0.05% per tick, roughly every 100 seconds
+        // Random chance for idle behavior (more frequent now)
+        if (random.nextInt(600) == 0) {  // ~0.17% per tick, roughly every 30 seconds
             doRandomBehavior();
+        }
+
+        // Additional chance for just emotes (even more frequent)
+        if (random.nextInt(400) == 0 && emoteCooldown <= 0) {  // Roughly every 20 seconds
+            doEmote();
         }
     }
 
@@ -285,14 +290,15 @@ public class CompanionPersonality {
         if (emoteCooldown > 0) return;
 
         if (companion.level() instanceof ServerLevel serverLevel) {
-            // Spawn heart particles
+            // Spawn heart particles - more visible
             serverLevel.sendParticles(
                 ParticleTypes.HEART,
                 companion.getX(), companion.getY() + 2, companion.getZ(),
-                3, 0.3, 0.3, 0.3, 0.1
+                5, 0.5, 0.5, 0.5, 0.1
             );
         }
-        emoteCooldown = 200;
+        say("*happy*");
+        emoteCooldown = 100;
     }
 
     private void doLookAroundEmote() {
@@ -309,9 +315,10 @@ public class CompanionPersonality {
 
         // Jump slightly
         if (companion.onGround()) {
-            companion.setDeltaMovement(companion.getDeltaMovement().add(0, 0.2, 0));
+            companion.setDeltaMovement(companion.getDeltaMovement().add(0, 0.3, 0));
         }
-        emoteCooldown = 100;
+        say("*stretches*");
+        emoteCooldown = 80;
     }
 
     private void doNodEmote() {
@@ -319,6 +326,22 @@ public class CompanionPersonality {
 
         // Quick head movement (swing arm as substitute)
         companion.swing(companion.getUsedItemHand());
+        say("*nods*");
+        emoteCooldown = 60;
+    }
+
+    private void doThinkingEmote() {
+        if (emoteCooldown > 0) return;
+
+        if (companion.level() instanceof ServerLevel serverLevel) {
+            // Spawn note particles for thinking
+            serverLevel.sendParticles(
+                ParticleTypes.NOTE,
+                companion.getX(), companion.getY() + 2.2, companion.getZ(),
+                2, 0.2, 0.1, 0.2, 0.0
+            );
+        }
+        say("*thinking*");
         emoteCooldown = 80;
     }
 
@@ -327,9 +350,10 @@ public class CompanionPersonality {
             serverLevel.sendParticles(
                 ParticleTypes.SMOKE,
                 companion.getX(), companion.getY() + 2, companion.getZ(),
-                5, 0.2, 0.2, 0.2, 0.02
+                8, 0.3, 0.3, 0.3, 0.02
             );
         }
+        say("*sighs*");
         setMood("sad", 400);
     }
 

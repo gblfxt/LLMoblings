@@ -23,6 +23,7 @@ public class Config {
     // Chat settings
     public static final ModConfigSpec.ConfigValue<String> CHAT_PREFIX;
     public static final ModConfigSpec.ConfigValue<Boolean> BROADCAST_COMPANION_CHAT;
+    public static final ModConfigSpec.ConfigValue<Boolean> ALLOW_OTHER_PLAYER_INTERACTION;
 
     static {
         BUILDER.comment("Ollama LLM Configuration").push("ollama");
@@ -82,6 +83,10 @@ public class Config {
         BROADCAST_COMPANION_CHAT = BUILDER
                 .comment("Whether to broadcast companion responses to all nearby players")
                 .define("broadcastChat", true);
+
+        ALLOW_OTHER_PLAYER_INTERACTION = BUILDER
+                .comment("Whether other players (not the owner) can talk to and command companions")
+                .define("allowOtherPlayerInteraction", true);
 
         BUILDER.pop();
 

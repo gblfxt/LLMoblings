@@ -89,6 +89,12 @@ UTILITY:
 - {"action": "autonomous", "radius": 32} - Go fully independent: assess base, hunt, equip, patrol
 - {"action": "idle"} - Do nothing, just chat
 
+HOME/BED:
+- {"action": "setbed"} - Set spawn point at nearest bed
+- {"action": "sethome"} - Set current location as home (uses /sethome command)
+- {"action": "home"} - Teleport to home location (uses /home command)
+- {"action": "sleep"} - Try to sleep in nearest bed
+
 RULES:
 1. Always respond with valid JSON containing an "action" field
 2. You can include a "message" field to say something while performing the action
@@ -211,17 +217,37 @@ Response: {"action": "attack", "target": "zombie", "message": "Fighting the zomb
                 }
             }
 
-            // Find JSON object in response
+            // Find JSON object in response - handle nested braces properly
             int jsonStart = jsonStr.indexOf('{');
-            int jsonEnd = jsonStr.lastIndexOf('}');
-            if (jsonStart >= 0 && jsonEnd > jsonStart) {
-                jsonStr = jsonStr.substring(jsonStart, jsonEnd + 1);
+            if (jsonStart >= 0) {
+                int braceCount = 0;
+                int jsonEnd = -1;
+                for (int i = jsonStart; i < jsonStr.length(); i++) {
+                    char c = jsonStr.charAt(i);
+                    if (c == '{') braceCount++;
+                    else if (c == '}') {
+                        braceCount--;
+                        if (braceCount == 0) {
+                            jsonEnd = i;
+                            break;
+                        }
+                    }
+                }
+                if (jsonEnd > jsonStart) {
+                    jsonStr = jsonStr.substring(jsonStart, jsonEnd + 1);
+                }
             }
 
+            // Clean up potential problematic characters
+            jsonStr = jsonStr.replace("\u2026", "...");  // Unicode ellipsis
+            jsonStr = jsonStr.replace("\u201c", "\"").replace("\u201d", "\"");  // Smart quotes
+            jsonStr = jsonStr.replace("\u2018", "'").replace("\u2019", "'");  // Smart apostrophes
+
             JsonObject json = GSON.fromJson(jsonStr, JsonObject.class);
+            Player2NPC.LOGGER.debug("Parsed LLM action: {}", json.get("action"));
             return CompanionAction.fromJson(json);
         } catch (Exception e) {
-            Player2NPC.LOGGER.warn("Failed to parse LLM response as JSON: {}", response);
+            Player2NPC.LOGGER.warn("Failed to parse LLM response as JSON: {} - Error: {}", response, e.getMessage());
             // Return idle action with the raw response as message
             return new CompanionAction("idle", response);
         }

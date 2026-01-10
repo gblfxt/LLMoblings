@@ -1,4 +1,5 @@
 {
+  "entity.player2npc.companion": "Companion",
   "key.player2npc.open_character_screen": "Open character screen",
   "category.player2npc.keys": "Player2NPC"
 }

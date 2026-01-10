@@ -13,6 +13,9 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Comparator;
@@ -36,6 +39,10 @@ public class CompanionAI {
 
     // Owner tracking for greetings
     private boolean ownerWasNearby = false;
+
+    // Home position tracking
+    private BlockPos homePos = null;
+    private BlockPos bedPos = null;
 
     public CompanionAI(CompanionEntity companion) {
         this.companion = companion;
@@ -80,8 +87,37 @@ public class CompanionAI {
             return;
         }
 
+        Player2NPC.LOGGER.info("[{}] Processing owner message: {}", companion.getCompanionName(), message);
         sendMessage("Thinking...");
         pendingAction = ollamaClient.chat(message);
+    }
+
+    /**
+     * Process a message from someone who is not the owner.
+     * They can chat but not give commands.
+     */
+    public void processMessageFromStranger(Player stranger, String message) {
+        if (pendingAction != null && !pendingAction.isDone()) {
+            sendMessageTo(stranger, "I'm still thinking about something...");
+            return;
+        }
+
+        Player2NPC.LOGGER.info("[{}] Processing stranger message from {}: {}",
+                companion.getCompanionName(), stranger.getName().getString(), message);
+
+        // For strangers, we add context that this is not the owner
+        String contextMessage = "[A player named " + stranger.getName().getString() +
+                " (not my owner) says: " + message + ". I should be friendly but I only take commands from my owner.]";
+
+        sendMessageTo(stranger, "Hmm?");
+        pendingAction = ollamaClient.chat(contextMessage);
+    }
+
+    private void sendMessageTo(Player player, String message) {
+        if (player != null && Config.BROADCAST_COMPANION_CHAT.get()) {
+            String formatted = "[" + companion.getCompanionName() + "] " + message;
+            player.sendSystemMessage(Component.literal(formatted));
+        }
     }
 
     private void executeAction(CompanionAction action) {
@@ -123,6 +159,10 @@ public class CompanionAI {
                 int radius = action.getInt("radius", 32);
                 scanArea(radius);
             }
+            case "explore", "wander", "look around" -> {
+                int radius = action.getInt("radius", 32);
+                startExploring(radius);
+            }
             case "autonomous", "independent", "survive" -> {
                 int radius = action.getInt("radius", 32);
                 startAutonomous(radius);
@@ -130,8 +170,12 @@ public class CompanionAI {
             case "idle" -> {
                 currentState = AIState.IDLE;
             }
+            case "setbed" -> findAndSetBed();
+            case "sethome" -> setHomeHere();
+            case "home" -> goHome();
+            case "sleep" -> tryToSleep();
             default -> {
-                Player2NPC.LOGGER.warn("Unknown action: {}", action.getAction());
+                Player2NPC.LOGGER.warn("[{}] Unknown action: {}", companion.getCompanionName(), action.getAction());
                 currentState = AIState.IDLE;
             }
         }
@@ -399,6 +443,13 @@ public class CompanionAI {
         sendMessage("Going autonomous! I'll assess the area, hunt for food, equip myself, and patrol. Tell me to 'stop' or 'follow' to return to normal.");
     }
 
+    private void startExploring(int radius) {
+        autonomousTask = new AutonomousTask(companion, radius);
+        autonomousTask.setExploring();  // Start directly in explore mode
+        currentState = AIState.AUTONOMOUS;
+        sendMessage("I'll explore the area! I can open doors and check out interesting spots.");
+    }
+
     private void retreat() {
         Player owner = companion.getOwner();
         if (owner != null) {
@@ -445,6 +496,101 @@ public class CompanionAI {
                 hostiles.size(), friendlies.size(), radius
         );
         sendMessage(report);
+        Player2NPC.LOGGER.info("[{}] Scan: {} hostiles, {} friendlies in {}m radius",
+                companion.getCompanionName(), hostiles.size(), friendlies.size(), radius);
+    }
+
+    private void findAndSetBed() {
+        Player2NPC.LOGGER.info("[{}] Searching for bed...", companion.getCompanionName());
+        BlockPos companionPos = companion.blockPosition();
+        int searchRadius = 16;
+
+        // Search for nearby bed
+        for (int x = -searchRadius; x <= searchRadius; x++) {
+            for (int y = -4; y <= 4; y++) {
+                for (int z = -searchRadius; z <= searchRadius; z++) {
+                    BlockPos checkPos = companionPos.offset(x, y, z);
+                    BlockState state = companion.level().getBlockState(checkPos);
+                    if (state.getBlock() instanceof BedBlock) {
+                        bedPos = checkPos;
+                        sendMessage("Found a bed! I'll remember this location at [" +
+                                checkPos.getX() + ", " + checkPos.getY() + ", " + checkPos.getZ() + "].");
+                        Player2NPC.LOGGER.info("[{}] Set bed position to {}", companion.getCompanionName(), checkPos);
+                        return;
+                    }
+                }
+            }
+        }
+        sendMessage("I couldn't find a bed nearby. Place one within 16 blocks of me.");
+        Player2NPC.LOGGER.info("[{}] No bed found in range", companion.getCompanionName());
+    }
+
+    private void setHomeHere() {
+        homePos = companion.blockPosition();
+        sendMessage("Home set! I'll remember this spot at [" +
+                homePos.getX() + ", " + homePos.getY() + ", " + homePos.getZ() + "].");
+        Player2NPC.LOGGER.info("[{}] Set home position to {}", companion.getCompanionName(), homePos);
+
+        // Also try to execute /sethome if server has the command
+        if (companion.level() instanceof ServerLevel serverLevel) {
+            try {
+                String command = "sethome " + companion.getCompanionName().toLowerCase().replace(" ", "_");
+                serverLevel.getServer().getCommands().performPrefixedCommand(
+                        serverLevel.getServer().createCommandSourceStack()
+                                .withPosition(companion.position())
+                                .withPermission(2),
+                        command
+                );
+                Player2NPC.LOGGER.info("[{}] Attempted server /sethome command", companion.getCompanionName());
+            } catch (Exception e) {
+                Player2NPC.LOGGER.debug("[{}] /sethome command not available: {}", companion.getCompanionName(), e.getMessage());
+            }
+        }
+    }
+
+    private void goHome() {
+        if (homePos != null) {
+            goTo(homePos);
+            sendMessage("Heading home to [" + homePos.getX() + ", " + homePos.getY() + ", " + homePos.getZ() + "]!");
+            Player2NPC.LOGGER.info("[{}] Going to home position {}", companion.getCompanionName(), homePos);
+        } else if (bedPos != null) {
+            goTo(bedPos);
+            sendMessage("Heading to my bed at [" + bedPos.getX() + ", " + bedPos.getY() + ", " + bedPos.getZ() + "]!");
+            Player2NPC.LOGGER.info("[{}] Going to bed position {}", companion.getCompanionName(), bedPos);
+        } else {
+            sendMessage("I don't have a home set. Tell me to 'sethome' first!");
+            Player2NPC.LOGGER.info("[{}] No home or bed position set", companion.getCompanionName());
+        }
+    }
+
+    private void tryToSleep() {
+        Player2NPC.LOGGER.info("[{}] Attempting to sleep...", companion.getCompanionName());
+        if (bedPos == null) {
+            findAndSetBed();
+        }
+
+        if (bedPos != null) {
+            double dist = companion.position().distanceTo(Vec3.atCenterOf(bedPos));
+            if (dist > 3) {
+                goTo(bedPos);
+                sendMessage("Walking to bed...");
+            } else {
+                // Check if it's night time
+                if (companion.level() instanceof ServerLevel serverLevel) {
+                    long dayTime = serverLevel.getDayTime() % 24000;
+                    if (dayTime >= 12542 && dayTime <= 23459) {
+                        sendMessage("*lies down in bed* Goodnight!");
+                        Player2NPC.LOGGER.info("[{}] Going to sleep", companion.getCompanionName());
+                        // Note: Actual sleeping mechanics would require more complex implementation
+                    } else {
+                        sendMessage("It's not night time yet. I can only sleep when it's dark.");
+                        Player2NPC.LOGGER.info("[{}] Cannot sleep - not night time (dayTime={})", companion.getCompanionName(), dayTime);
+                    }
+                }
+            }
+        } else {
+            sendMessage("I need a bed to sleep! Find me one first.");
+        }
     }
 
     private void sendMessage(String message) {
