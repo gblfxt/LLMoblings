@@ -6,13 +6,13 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.tags.BlockTags;
-import net.minecraft.tags.TagKey;
+import net.minecraft.world.Container;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -36,6 +36,11 @@ public class MiningTask {
     // Block types that match the request
     private final Set<Block> targetBlocks = new HashSet<>();
 
+    // Spatial awareness - protected zones
+    private final Set<BlockPos> protectedPositions = new HashSet<>();
+    private BlockPos homePos;
+    private static final int BASE_PROTECTION_RADIUS = 8;  // Don't mine within 8 blocks of base structures
+
     // Mining speeds (ticks to break)
     private static final int BASE_MINING_TICKS = 30; // About 1.5 seconds base
 
@@ -44,13 +49,124 @@ public class MiningTask {
         this.targetBlockName = blockName.toLowerCase();
         this.targetCount = count;
         this.searchRadius = searchRadius;
+        this.homePos = companion.blockPosition();
 
         resolveTargetBlocks();
+        scanProtectedZones();
 
         if (targetBlocks.isEmpty()) {
             failed = true;
             failReason = "I don't know what '" + blockName + "' is.";
         }
+    }
+
+    /**
+     * Scan the area to identify structures and protected zones.
+     */
+    private void scanProtectedZones() {
+        BlockPos center = companion.blockPosition();
+
+        for (int x = -searchRadius; x <= searchRadius; x++) {
+            for (int y = -10; y <= 10; y++) {
+                for (int z = -searchRadius; z <= searchRadius; z++) {
+                    BlockPos pos = center.offset(x, y, z);
+                    BlockEntity be = companion.level().getBlockEntity(pos);
+
+                    // Protect areas around containers, crafting stations, etc.
+                    if (be instanceof Container || isImportantBlock(companion.level().getBlockState(pos))) {
+                        markProtectedZone(pos, BASE_PROTECTION_RADIUS);
+                    }
+                }
+            }
+        }
+
+        Player2NPC.LOGGER.debug("Identified {} protected positions", protectedPositions.size());
+    }
+
+    private boolean isImportantBlock(BlockState state) {
+        String blockName = BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
+        // Protect crafting stations, furnaces, chests, beds, etc.
+        return blockName.contains("chest") ||
+               blockName.contains("barrel") ||
+               blockName.contains("furnace") ||
+               blockName.contains("crafting") ||
+               blockName.contains("anvil") ||
+               blockName.contains("enchant") ||
+               blockName.contains("bed") ||
+               blockName.contains("door") ||
+               blockName.contains("torch") ||
+               blockName.contains("lantern") ||
+               blockName.contains("campfire") ||
+               blockName.contains("table") ||
+               blockName.contains("workbench") ||
+               blockName.contains("terminal") ||  // AE2
+               blockName.contains("interface") || // AE2
+               blockName.contains("drive");       // AE2
+    }
+
+    private void markProtectedZone(BlockPos center, int radius) {
+        for (int x = -radius; x <= radius; x++) {
+            for (int y = -radius; y <= radius; y++) {
+                for (int z = -radius; z <= radius; z++) {
+                    protectedPositions.add(center.offset(x, y, z));
+                }
+            }
+        }
+    }
+
+    /**
+     * Check if a block is safe to mine (not part of a structure).
+     */
+    private boolean isSafeToMine(BlockPos pos) {
+        // Don't mine in protected zones
+        if (protectedPositions.contains(pos)) {
+            return false;
+        }
+
+        BlockState state = companion.level().getBlockState(pos);
+
+        // Don't mine if it would remove a floor (block with air below and solid above)
+        BlockState below = companion.level().getBlockState(pos.below());
+        BlockState above = companion.level().getBlockState(pos.above());
+        if (!below.isSolid() && above.isSolid()) {
+            // This might be a floor block
+            return false;
+        }
+
+        // Don't mine blocks that are clearly structural (walls)
+        int adjacentAir = 0;
+        int adjacentSolid = 0;
+        for (BlockPos adj : new BlockPos[]{pos.north(), pos.south(), pos.east(), pos.west()}) {
+            if (companion.level().getBlockState(adj).isAir()) {
+                adjacentAir++;
+            } else if (companion.level().getBlockState(adj).isSolid()) {
+                adjacentSolid++;
+            }
+        }
+
+        // If block has exactly one air side and is above ground, it might be a wall
+        if (adjacentAir == 1 && adjacentSolid >= 2 && !below.isAir()) {
+            // Check if this looks like a wall (vertical line of same blocks)
+            BlockState aboveState = companion.level().getBlockState(pos.above());
+            BlockState belowState = companion.level().getBlockState(pos.below());
+            if (state.getBlock() == aboveState.getBlock() || state.getBlock() == belowState.getBlock()) {
+                return false;  // Likely a wall
+            }
+        }
+
+        // Prefer natural generation - ores are always safe
+        String blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
+        if (blockId.contains("ore") || blockId.contains("_log") || blockId.contains("leaves")) {
+            return true;  // Natural blocks are safe
+        }
+
+        // For stone/dirt, only mine if underground (Y < 60 or has blocks above)
+        if (blockId.equals("stone") || blockId.equals("cobblestone") ||
+            blockId.equals("dirt") || blockId.equals("grass_block")) {
+            return pos.getY() < 60 || !companion.level().canSeeSky(pos);
+        }
+
+        return true;
     }
 
     private void resolveTargetBlocks() {
@@ -231,8 +347,8 @@ public class MiningTask {
                         if (targetBlocks.contains(state.getBlock())) {
                             double dist = companionPos.distSqr(checkPos);
                             if (dist < nearestDist) {
-                                // Check if reachable (not surrounded by blocks)
-                                if (isReachable(checkPos)) {
+                                // Check if safe to mine and reachable
+                                if (isSafeToMine(checkPos) && isReachable(checkPos)) {
                                     nearest = checkPos;
                                     nearestDist = dist;
                                 }
