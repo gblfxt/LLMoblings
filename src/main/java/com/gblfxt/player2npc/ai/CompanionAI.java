@@ -17,6 +17,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.item.ItemStack;
 
 import java.util.Comparator;
 import java.util.List;
@@ -191,6 +192,8 @@ public class CompanionAI {
             }
             case "tpaccept" -> acceptTeleport();
             case "tpdeny" -> denyTeleport();
+            case "equip", "gear", "arm" -> equipBestGear();
+            case "inventory", "inv", "items" -> reportInventory();
             default -> {
                 Player2NPC.LOGGER.warn("[{}] Unknown action: {}", companion.getCompanionName(), action.getAction());
                 currentState = AIState.IDLE;
@@ -658,6 +661,42 @@ public class CompanionAI {
             }
         } else {
             sendMessage("I need a bed to sleep! Find me one first.");
+        }
+    }
+
+    private void equipBestGear() {
+        // Check current weapon
+        ItemStack currentWeapon = companion.getMainHandItem();
+        if (!currentWeapon.isEmpty()) {
+            sendMessage("I'm already holding " + currentWeapon.getHoverName().getString() + "!");
+        } else {
+            // Trigger autonomous mode to find and equip gear
+            sendMessage("I don't have a weapon. Going to look for one in storage!");
+            startAutonomous(32);
+        }
+    }
+
+    private void reportInventory() {
+        ItemStack mainHand = companion.getMainHandItem();
+        ItemStack offHand = companion.getOffhandItem();
+
+        StringBuilder sb = new StringBuilder("I'm holding: ");
+        boolean hasItems = false;
+
+        if (!mainHand.isEmpty()) {
+            sb.append(mainHand.getHoverName().getString()).append(" (main hand)");
+            hasItems = true;
+        }
+        if (!offHand.isEmpty()) {
+            if (hasItems) sb.append(", ");
+            sb.append(offHand.getHoverName().getString()).append(" (off hand)");
+            hasItems = true;
+        }
+
+        if (!hasItems) {
+            sendMessage("I'm not holding anything.");
+        } else {
+            sendMessage(sb.toString());
         }
     }
 

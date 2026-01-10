@@ -102,6 +102,10 @@ TELEPORT:
 - {"action": "tpaccept"} - Accept an incoming teleport request
 - {"action": "tpdeny"} - Deny an incoming teleport request
 
+GEAR/INVENTORY:
+- {"action": "equip"} - Equip the best weapon from your inventory
+- {"action": "inventory"} - Report what items you have in your inventory
+
 RULES:
 1. ONLY output JSON. Never output plain text.
 2. Every response MUST be a JSON object with "action" field
