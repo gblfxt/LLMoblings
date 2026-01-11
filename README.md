@@ -1,4 +1,4 @@
-# Player2NPC - AI Companions for Minecraft
+# LLMoblings - LLM-Powered Mobs for Minecraft
 
 An AI-powered companion mod for NeoForge 1.21.1 that creates intelligent NPCs you can command using natural language. Companions are powered by Ollama LLM and can perform a wide variety of tasks autonomously.
 
@@ -78,9 +78,9 @@ Companions can build structures from blueprints!
 
 ### Building Process
 1. **Material Check**: Companion inventories materials needed
-2. **Gathering**: Gets materials from inventory → ME network → chests → mines/chops
+2. **Gathering**: Gets materials from inventory -> ME network -> chests -> mines/chops
 3. **Site Prep**: Clears vegetation and levels ground
-4. **Construction**: Places blocks in order (foundation → walls → roof → interior)
+4. **Construction**: Places blocks in order (foundation -> walls -> roof -> interior)
 
 ---
 
@@ -100,6 +100,7 @@ Companions can have a Pokemon buddy that follows them!
 - `@Sam bond with Pikachu` - Bond with specific Pokemon by name
 - `@Sam release your buddy` - Release current Pokemon buddy
 - `@Sam check on your buddy` - Status report on Pokemon companion
+- `@Sam cobblestats` - Check nearby Pokemon IVs/EVs/nature/ability
 - Pokemon buddy follows companion, teleports if too far
 
 ### Building Gadgets 2
@@ -123,6 +124,13 @@ Companions can use backpacks for extra storage!
 ### FTB Teams
 - Teammates can give commands to each other's companions
 - Non-teammates can only chat (no commands)
+
+### JourneyMap
+- Companions appear as waypoints on your map
+
+### Elevator Support
+- Companions can use elevator blocks (Quark, OpenBlocks, etc.)
+- `@Sam go up` / `@Sam go down` - Use nearby elevator
 
 ### Other Storage Mods
 Companions detect and can use:
@@ -211,6 +219,7 @@ Companions detect and can use:
 | `bond with <name>` | Bond with specific Pokemon |
 | `release buddy` | Release Pokemon companion |
 | `check buddy` | Status of Pokemon buddy |
+| `cobblestats` | Check nearby Pokemon stats |
 
 **Gadgets (Building Gadgets 2):**
 | Command | Description |
@@ -303,7 +312,7 @@ Higher priority targets are preferred:
 
 ## Configuration
 
-Config file: `config/player2npc-common.toml`
+Config file: `config/llmoblings-common.toml`
 
 ### Ollama Settings
 ```toml
@@ -343,17 +352,18 @@ allowOtherPlayerInteraction = true    # Let non-owners chat with companions
 
 ### Optional Mod Support
 - Applied Energistics 2 (ME network access)
-- Cobblemon (Pokemon buddy system)
+- Cobblemon (Pokemon buddy system + stats)
 - Building Gadgets 2 (gadget usage)
 - Sophisticated Backpacks (backpack usage)
 - FTB Teams (team-based permissions)
+- JourneyMap (map markers)
 
 ---
 
 ## Installation
 
 1. Install NeoForge 1.21.1
-2. Place `player2npc-2.0.0.jar` in your mods folder
+2. Place `llmoblings-1.0.0.jar` in your mods folder
 3. Configure Ollama connection in config file
 4. Start the server/game
 5. Use `/companion summon <name>` to create your first companion!
@@ -379,7 +389,7 @@ allowOtherPlayerInteraction = true    # Let non-owners chat with companions
 - Ensure farm area has recognizable farm blocks
 
 ### Logs
-The mod logs to `logs/latest.log` with prefix `[Player2NPC]`:
+The mod logs to `logs/latest.log` with prefix `[LLMoblings]`:
 - INFO level: State changes, commands received, actions taken
 - DEBUG level: Detailed pathfinding, inventory operations
 
@@ -391,6 +401,6 @@ MIT License - See LICENSE file for details.
 
 ## Credits
 
-Developed for the gblfxt modpack by critic/gblfxt.
+Developed for the gblfxt modpack.
 
 AI-powered by Ollama and Llama models.
