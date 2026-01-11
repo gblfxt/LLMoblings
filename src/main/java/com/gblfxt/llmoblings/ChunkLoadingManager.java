@@ -89,7 +89,7 @@ public class ChunkLoadingManager {
             }
 
             loadedChunks.put(companionId, newLoadedChunks);
-            LLMoblings.LOGGER.debug("Started chunk loading for companion {} - {} chunks centered at {}",
+            LLMoblings.LOGGER.info("[{}] Started chunk loading - {} chunks centered at {}",
                     companion.getCompanionName(), newLoadedChunks.size(), centerChunk);
         }
     }
@@ -117,7 +117,7 @@ public class ChunkLoadingManager {
                 );
             }
 
-            LLMoblings.LOGGER.debug("Stopped chunk loading for companion {} - {} chunks unloaded",
+            LLMoblings.LOGGER.info("[{}] Stopped chunk loading - {} chunks unloaded",
                     companion.getCompanionName(), oldChunks.size());
         }
     }

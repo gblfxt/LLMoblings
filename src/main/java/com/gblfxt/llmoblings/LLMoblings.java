@@ -66,7 +66,11 @@ public class LLMoblings {
     }
 
     private void registerEntityAttributes(final EntityAttributeCreationEvent event) {
-        event.put(COMPANION.get(), CompanionEntity.createAttributes().build());
+        LOGGER.info("Registering entity attributes for companion entity type: {}", COMPANION.get());
+        var attributes = CompanionEntity.createAttributes().build();
+        LOGGER.info("Created attributes: {}", attributes);
+        event.put(COMPANION.get(), attributes);
+        LOGGER.info("Entity attributes registered successfully");
     }
 
     private void registerPayloads(final RegisterPayloadHandlersEvent event) {

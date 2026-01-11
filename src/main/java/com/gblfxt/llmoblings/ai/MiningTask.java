@@ -2,6 +2,7 @@ package com.gblfxt.llmoblings.ai;
 
 import com.gblfxt.llmoblings.ChunkLoadingManager;
 import com.gblfxt.llmoblings.LLMoblings;
+import com.gblfxt.llmoblings.compat.AE2Integration;
 import com.gblfxt.llmoblings.entity.CompanionEntity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -50,6 +51,10 @@ public class MiningTask {
     private boolean isVeinMining = false;
     private boolean isTreeFelling = false;
     private boolean hasEquippedTool = false;
+    private boolean toolCheckDone = false;
+
+    // ME network access for tool retrieval
+    private BlockPos meAccessPoint = null;
 
     public MiningTask(CompanionEntity companion, String blockName, int count, int searchRadius) {
         this.companion = companion;
@@ -60,10 +65,25 @@ public class MiningTask {
 
         resolveTargetBlocks();
         scanProtectedZones();
+        findMEAccessPoint();
 
         if (targetBlocks.isEmpty()) {
             failed = true;
             failReason = "I don't know what '" + blockName + "' is.";
+        }
+    }
+
+    /**
+     * Find nearby ME network access points for tool retrieval.
+     */
+    private void findMEAccessPoint() {
+        List<BlockPos> meAccessPoints = AE2Integration.findMEAccessPoints(
+                companion.level(), companion.blockPosition(), searchRadius);
+
+        if (!meAccessPoints.isEmpty()) {
+            meAccessPoint = meAccessPoints.get(0);
+            LLMoblings.LOGGER.debug("[{}] Found ME access point at {} for tool retrieval",
+                    companion.getCompanionName(), meAccessPoint);
         }
     }
 
@@ -286,11 +306,30 @@ public class MiningTask {
 
         ticksSinceLastProgress = 0;
 
-        // Equip best tool if we haven't yet
-        if (!hasEquippedTool) {
+        // Ensure we have the right tool (from inventory, ME network, or crafting)
+        if (!toolCheckDone) {
             BlockState targetState = companion.level().getBlockState(currentTarget);
-            UltimineHelper.equipBestTool(companion, targetState);
-            hasEquippedTool = true;
+            UltimineHelper.EnsureToolResult toolResult = UltimineHelper.ensureTool(companion, targetState, meAccessPoint);
+
+            if (toolResult.success()) {
+                LLMoblings.LOGGER.info("[{}] Tool ready: {}",
+                        companion.getCompanionName(), toolResult.message());
+                hasEquippedTool = true;
+            } else {
+                // Log the issue but continue - companion will mine slowly with bare hands
+                LLMoblings.LOGGER.warn("[{}] Tool issue: {} - mining anyway",
+                        companion.getCompanionName(), toolResult.message());
+            }
+            toolCheckDone = true;
+        }
+
+        // Check if we're using the wrong tool and should re-check
+        if (hasEquippedTool && currentTarget != null) {
+            BlockState targetState = companion.level().getBlockState(currentTarget);
+            if (!UltimineHelper.hasCorrectToolEquipped(companion, targetState)) {
+                // Try to switch to correct tool
+                UltimineHelper.equipBestTool(companion, targetState);
+            }
         }
 
         // Move towards target

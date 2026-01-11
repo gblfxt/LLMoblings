@@ -283,13 +283,20 @@ public class AutonomousTask {
     private void determineNextAction() {
         needs.clear();
 
-        // Priority 1: Equip available gear
+        // Priority 1: Equip available gear from inventory
         if (shouldEquip()) {
             changeState(AutonomousState.EQUIPPING);
             return;
         }
 
-        // Priority 2: Get food if low
+        // Priority 2: Get gear from ME network if lacking weapons/armor
+        if (meAccessPoint != null && (!hasWeapon || !hasArmor)) {
+            needs.add("gear");
+            changeState(AutonomousState.RETRIEVING_ME);
+            return;
+        }
+
+        // Priority 3: Get food if low
         if (foodCount < 5) {
             needs.add("food");
 
@@ -304,30 +311,36 @@ public class AutonomousTask {
             return;
         }
 
-        // Priority 3: Store excess items
+        // Priority 4: Store excess items
         if (hasExcessItems() && targetStorage != null) {
             changeState(AutonomousState.STORING);
             return;
         }
 
-        // Priority 4: Patrol or explore
+        // Priority 5: Patrol the area (hunt hostile mobs)
+        // Patrol even without weapon - can still punch mobs!
+        // With weapon: 70% patrol, 30% explore
+        // Without weapon: 40% patrol, 40% explore, 20% rest
+        int roll = companion.getRandom().nextInt(10);
         if (hasWeapon) {
-            // Alternate between patrolling and exploring
-            if (companion.getRandom().nextInt(3) == 0) {
-                changeState(AutonomousState.EXPLORING);
-            } else {
+            if (roll < 7) {
                 changeState(AutonomousState.PATROLLING);
+            } else {
+                changeState(AutonomousState.EXPLORING);
             }
             return;
+        } else {
+            // Still patrol sometimes even without weapon
+            if (roll < 4) {
+                changeState(AutonomousState.PATROLLING);
+                return;
+            } else if (roll < 8) {
+                changeState(AutonomousState.EXPLORING);
+                return;
+            }
         }
 
-        // Priority 5: Explore the base even without weapon
-        if (companion.getRandom().nextInt(2) == 0) {
-            changeState(AutonomousState.EXPLORING);
-            return;
-        }
-
-        // Default: Rest
+        // Default: Rest (but still look for threats while resting)
         changeState(AutonomousState.RESTING);
     }
 
@@ -372,6 +385,81 @@ public class AutonomousTask {
         }
 
         return false;
+    }
+
+    /**
+     * Try to retrieve weapons and armor from ME network.
+     * @return true if gear was successfully retrieved
+     */
+    private boolean tryGetGearFromME() {
+        if (meAccessPoint == null) return false;
+
+        // Move to ME access point if not close
+        double distance = companion.position().distanceTo(Vec3.atCenterOf(meAccessPoint));
+        if (distance > 5.0) {
+            companion.getNavigation().moveTo(
+                    meAccessPoint.getX() + 0.5,
+                    meAccessPoint.getY(),
+                    meAccessPoint.getZ() + 0.5,
+                    1.0
+            );
+            return false;  // Will try again next tick
+        }
+
+        boolean gotGear = false;
+
+        // Try to get a weapon if we don't have one
+        if (!hasWeapon) {
+            List<ItemStack> weapons = AE2Integration.extractItems(
+                    companion.level(),
+                    meAccessPoint,
+                    stack -> stack.getItem() instanceof SwordItem || stack.getItem() instanceof AxeItem,
+                    1  // Just get one weapon
+            );
+
+            if (!weapons.isEmpty()) {
+                for (ItemStack stack : weapons) {
+                    ItemStack remaining = companion.addToInventory(stack);
+                    if (remaining.getCount() < stack.getCount()) {
+                        report("Retrieved " + stack.getItem().getDescription().getString() + " from ME network!");
+                        gotGear = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Try to get armor pieces we're missing
+        for (EquipmentSlot slot : new EquipmentSlot[]{
+                EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+            if (companion.getItemBySlot(slot).isEmpty()) {
+                final EquipmentSlot targetSlot = slot;
+                List<ItemStack> armor = AE2Integration.extractItems(
+                        companion.level(),
+                        meAccessPoint,
+                        stack -> {
+                            if (stack.getItem() instanceof ArmorItem armorItem) {
+                                return armorItem.getEquipmentSlot() == targetSlot;
+                            }
+                            return false;
+                        },
+                        1
+                );
+
+                if (!armor.isEmpty()) {
+                    for (ItemStack stack : armor) {
+                        ItemStack remaining = companion.addToInventory(stack);
+                        if (remaining.getCount() < stack.getCount()) {
+                            report("Retrieved " + stack.getItem().getDescription().getString() + " from ME network!");
+                            gotGear = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        return gotGear;
     }
 
     private boolean shouldEquip() {
@@ -879,8 +967,15 @@ public class AutonomousTask {
             return;
         }
 
+        boolean needsGear = needs.contains("gear");
+        boolean needsFood = needs.contains("food");
+
         if (ticksInState == 1) {
-            report("Going to the ME terminal for food...");
+            if (needsGear) {
+                report("Going to the ME terminal for gear...");
+            } else {
+                report("Going to the ME terminal for food...");
+            }
             lastPosition = companion.position();
             stuckTicks = 0;
         }
@@ -893,9 +988,13 @@ public class AutonomousTask {
             if (lastPosition != null && currentPos.distanceTo(lastPosition) < 1.0) {
                 stuckTicks += 60;
                 if (stuckTicks > 180) {  // Stuck for 9+ seconds
-                    report("Can't reach the ME terminal, going hunting instead...");
+                    report("Can't reach the ME terminal...");
                     stuckTicks = 0;
-                    changeState(AutonomousState.HUNTING);
+                    if (needsFood) {
+                        changeState(AutonomousState.HUNTING);
+                    } else {
+                        changeState(AutonomousState.PATROLLING);
+                    }
                     return;
                 }
             } else {
@@ -915,31 +1014,61 @@ public class AutonomousTask {
                 );
             }
         } else {
-            // Close enough - try to extract food
-            List<ItemStack> food = AE2Integration.extractItems(
-                    companion.level(),
-                    meAccessPoint,
-                    stack -> stack.getItem().getFoodProperties(stack, companion) != null,
-                    16
-            );
+            // Close enough - try to get what we need
+            boolean gotSomething = false;
 
-            if (!food.isEmpty()) {
-                int totalFood = 0;
-                for (ItemStack stack : food) {
-                    ItemStack remaining = companion.addToInventory(stack);
-                    totalFood += stack.getCount() - remaining.getCount();
-                }
-                if (totalFood > 0) {
-                    report("Retrieved " + totalFood + " food from ME network!");
+            // Try to get gear first if we need it
+            if (needsGear) {
+                gotSomething = tryGetGearFromME();
+                if (gotSomething) {
                     assessSelf();
-                    changeState(AutonomousState.ASSESSING);
-                    return;
+                    // Check if we still need more gear
+                    if (hasWeapon && hasArmor) {
+                        needs.remove("gear");
+                    }
                 }
             }
 
-            // ME didn't have food or extraction failed
-            report("Couldn't get food from ME network, going hunting...");
-            changeState(AutonomousState.HUNTING);
+            // Try to get food if we need it
+            if (needsFood) {
+                List<ItemStack> food = AE2Integration.extractItems(
+                        companion.level(),
+                        meAccessPoint,
+                        stack -> stack.getItem().getFoodProperties(stack, companion) != null,
+                        16
+                );
+
+                if (!food.isEmpty()) {
+                    int totalFood = 0;
+                    for (ItemStack stack : food) {
+                        ItemStack remaining = companion.addToInventory(stack);
+                        totalFood += stack.getCount() - remaining.getCount();
+                    }
+                    if (totalFood > 0) {
+                        report("Retrieved " + totalFood + " food from ME network!");
+                        gotSomething = true;
+                        needs.remove("food");
+                    }
+                }
+            }
+
+            // Reassess after getting items
+            if (gotSomething) {
+                assessSelf();
+                changeState(AutonomousState.ASSESSING);
+                return;
+            }
+
+            // ME didn't have what we needed
+            if (needsFood) {
+                report("Couldn't get food from ME network, going hunting...");
+                changeState(AutonomousState.HUNTING);
+            } else if (needsGear) {
+                report("No gear available in ME network, patrolling anyway...");
+                changeState(AutonomousState.PATROLLING);
+            } else {
+                changeState(AutonomousState.ASSESSING);
+            }
         }
 
         // Timeout
@@ -1130,10 +1259,34 @@ public class AutonomousTask {
             report("Taking a break near base.");
         }
 
+        // Stay alert for threats even while resting!
+        if (ticksInState % 40 == 0) {
+            AABB searchBox = companion.getBoundingBox().inflate(baseRadius / 2);
+            List<Monster> nearbyThreats = companion.level().getEntitiesOfClass(Monster.class, searchBox,
+                    Monster::isAlive);
+
+            if (!nearbyThreats.isEmpty()) {
+                Monster nearest = nearbyThreats.stream()
+                        .min(Comparator.comparingDouble(m -> companion.distanceTo(m)))
+                        .orElse(null);
+
+                if (nearest != null && companion.distanceTo(nearest) < 16) {
+                    report("Hostile mob spotted! Switching to patrol mode!");
+                    changeState(AutonomousState.PATROLLING);
+                    return;
+                }
+            }
+        }
+
         // Stay near home
         double distFromHome = companion.position().distanceTo(Vec3.atCenterOf(homePos));
         if (distFromHome > baseRadius) {
             companion.getNavigation().moveTo(homePos.getX(), homePos.getY(), homePos.getZ(), 0.8);
+        }
+
+        // Look around occasionally while resting
+        if (ticksInState % 60 == 0) {
+            companion.setYRot(companion.getYRot() + (companion.getRandom().nextFloat() - 0.5F) * 90);
         }
 
         // Periodically reassess

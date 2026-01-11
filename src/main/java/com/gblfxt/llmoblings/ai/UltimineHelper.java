@@ -1,10 +1,12 @@
 package com.gblfxt.llmoblings.ai;
 
 import com.gblfxt.llmoblings.LLMoblings;
+import com.gblfxt.llmoblings.compat.AE2Integration;
 import com.gblfxt.llmoblings.entity.CompanionEntity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.*;
 import net.minecraft.world.level.Level;
@@ -27,6 +29,340 @@ public class UltimineHelper {
     private static final int MAX_VEIN_SIZE = 64;
     private static final int MAX_TREE_SIZE = 128;
     private static final int MAX_CROP_AREA = 9; // 3x3
+
+    /**
+     * Types of tools for different block types.
+     */
+    public enum ToolType {
+        PICKAXE(PickaxeItem.class, "pickaxe"),
+        AXE(AxeItem.class, "axe"),
+        SHOVEL(ShovelItem.class, "shovel"),
+        HOE(HoeItem.class, "hoe"),
+        NONE(null, null);
+
+        public final Class<? extends Item> itemClass;
+        public final String name;
+
+        ToolType(Class<? extends Item> itemClass, String name) {
+            this.itemClass = itemClass;
+            this.name = name;
+        }
+    }
+
+    /**
+     * Determine what type of tool is needed for a block.
+     */
+    public static ToolType getRequiredToolType(BlockState state) {
+        String blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
+
+        if (blockId.contains("ore") || blockId.contains("stone") ||
+            blockId.contains("cobble") || blockId.contains("brick") ||
+            blockId.contains("obsidian") || blockId.contains("netherrack") ||
+            blockId.contains("deepslate") || blockId.contains("basalt") ||
+            blockId.contains("terracotta") || blockId.contains("concrete")) {
+            return ToolType.PICKAXE;
+        }
+
+        if (blockId.contains("log") || blockId.contains("wood") ||
+            blockId.contains("plank") || blockId.contains("fence") ||
+            blockId.contains("door") || blockId.contains("chest") ||
+            blockId.contains("barrel") || blockId.contains("crafting") ||
+            blockId.contains("bookshelf")) {
+            return ToolType.AXE;
+        }
+
+        if (blockId.contains("dirt") || blockId.contains("sand") ||
+            blockId.contains("gravel") || blockId.contains("clay") ||
+            blockId.contains("soul") || blockId.contains("snow") ||
+            blockId.contains("mud") || blockId.contains("mycelium") ||
+            blockId.contains("podzol") || blockId.contains("grass_block")) {
+            return ToolType.SHOVEL;
+        }
+
+        if (blockId.contains("leaves") || blockId.contains("hay") ||
+            blockId.contains("sponge") || blockId.contains("moss") ||
+            blockId.contains("sculk") || blockId.contains("nether_wart")) {
+            return ToolType.HOE;
+        }
+
+        return ToolType.NONE;
+    }
+
+    /**
+     * Check if the companion is holding the right tool type.
+     */
+    public static boolean hasCorrectToolEquipped(CompanionEntity companion, BlockState state) {
+        ToolType required = getRequiredToolType(state);
+        if (required == ToolType.NONE) return true;
+
+        ItemStack mainHand = companion.getMainHandItem();
+        if (mainHand.isEmpty()) return false;
+
+        return required.itemClass != null && required.itemClass.isInstance(mainHand.getItem());
+    }
+
+    /**
+     * Ensure the companion has the right tool - try inventory, then ME, then crafting.
+     * Returns true if a suitable tool is equipped or available.
+     */
+    public static EnsureToolResult ensureTool(CompanionEntity companion, BlockState state, BlockPos meAccessPoint) {
+        ToolType required = getRequiredToolType(state);
+        if (required == ToolType.NONE) {
+            return new EnsureToolResult(true, "No specific tool needed");
+        }
+
+        // Already has correct tool equipped?
+        if (hasCorrectToolEquipped(companion, state)) {
+            return new EnsureToolResult(true, "Already equipped");
+        }
+
+        // Try to equip from inventory
+        if (equipBestTool(companion, state)) {
+            return new EnsureToolResult(true, "Equipped from inventory");
+        }
+
+        // Try to get from ME network
+        if (meAccessPoint != null && tryGetToolFromME(companion, required, meAccessPoint)) {
+            // Now equip it
+            equipBestTool(companion, state);
+            return new EnsureToolResult(true, "Retrieved from ME network");
+        }
+
+        // Try to craft a basic tool
+        if (tryCraftTool(companion, required)) {
+            equipBestTool(companion, state);
+            return new EnsureToolResult(true, "Crafted new tool");
+        }
+
+        return new EnsureToolResult(false, "No " + required.name + " available and can't craft one");
+    }
+
+    /**
+     * Result of trying to ensure a tool is available.
+     */
+    public record EnsureToolResult(boolean success, String message) {}
+
+    /**
+     * Try to retrieve a tool from the ME network.
+     */
+    public static boolean tryGetToolFromME(CompanionEntity companion, ToolType toolType, BlockPos meAccessPoint) {
+        if (meAccessPoint == null || toolType.itemClass == null) return false;
+
+        List<ItemStack> tools = AE2Integration.extractItems(
+                companion.level(),
+                meAccessPoint,
+                stack -> toolType.itemClass.isInstance(stack.getItem()),
+                1  // Just get one tool
+        );
+
+        if (!tools.isEmpty()) {
+            for (ItemStack stack : tools) {
+                ItemStack remaining = companion.addToInventory(stack);
+                if (remaining.getCount() < stack.getCount()) {
+                    LLMoblings.LOGGER.info("[{}] Retrieved {} from ME network",
+                            companion.getCompanionName(), stack.getItem().getDescription().getString());
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Try to craft a basic tool from inventory materials.
+     * Crafts the best tier possible from available materials.
+     */
+    public static boolean tryCraftTool(CompanionEntity companion, ToolType toolType) {
+        if (toolType == ToolType.NONE) return false;
+
+        // Check what materials we have
+        int sticks = countItem(companion, Items.STICK);
+        int planks = countItemByTag(companion, "planks");
+        int cobblestone = countItem(companion, Items.COBBLESTONE);
+        int iron = countItem(companion, Items.IRON_INGOT);
+        int diamonds = countItem(companion, Items.DIAMOND);
+        int logs = countItemByTag(companion, "logs");
+
+        // Can make sticks from planks if needed
+        if (sticks < 2 && planks >= 2) {
+            // Craft sticks from planks
+            if (removeItems(companion, null, "planks", 2)) {
+                addItem(companion, Items.STICK, 4);
+                sticks = countItem(companion, Items.STICK);
+                LLMoblings.LOGGER.info("[{}] Crafted sticks from planks", companion.getCompanionName());
+            }
+        }
+
+        // Can make planks from logs if needed
+        if (planks < 3 && logs >= 1) {
+            if (removeItems(companion, null, "logs", 1)) {
+                addItem(companion, Items.OAK_PLANKS, 4);
+                planks = countItemByTag(companion, "planks");
+                LLMoblings.LOGGER.info("[{}] Crafted planks from logs", companion.getCompanionName());
+            }
+        }
+
+        // Need at least 2 sticks for any tool
+        if (sticks < 2) {
+            LLMoblings.LOGGER.debug("[{}] Not enough sticks to craft tool (have {})",
+                    companion.getCompanionName(), sticks);
+            return false;
+        }
+
+        // Determine what we can craft and craft the best tier
+        Item toolItem = null;
+        boolean crafted = false;
+
+        // Diamond tier (3 diamonds + 2 sticks)
+        if (diamonds >= 3 && !crafted) {
+            toolItem = getDiamondTool(toolType);
+            if (toolItem != null && removeItem(companion, Items.DIAMOND, 3) && removeItem(companion, Items.STICK, 2)) {
+                crafted = true;
+            }
+        }
+
+        // Iron tier (3 iron + 2 sticks)
+        if (iron >= 3 && !crafted) {
+            toolItem = getIronTool(toolType);
+            if (toolItem != null && removeItem(companion, Items.IRON_INGOT, 3) && removeItem(companion, Items.STICK, 2)) {
+                crafted = true;
+            }
+        }
+
+        // Stone tier (3 cobblestone + 2 sticks)
+        if (cobblestone >= 3 && !crafted) {
+            toolItem = getStoneTool(toolType);
+            if (toolItem != null && removeItem(companion, Items.COBBLESTONE, 3) && removeItem(companion, Items.STICK, 2)) {
+                crafted = true;
+            }
+        }
+
+        // Wood tier (3 planks + 2 sticks)
+        if (planks >= 3 && !crafted) {
+            toolItem = getWoodTool(toolType);
+            if (toolItem != null && removeItems(companion, null, "planks", 3) && removeItem(companion, Items.STICK, 2)) {
+                crafted = true;
+            }
+        }
+
+        if (crafted && toolItem != null) {
+            addItem(companion, toolItem, 1);
+            LLMoblings.LOGGER.info("[{}] Crafted {}",
+                    companion.getCompanionName(), toolItem.getDescription().getString());
+            return true;
+        }
+
+        return false;
+    }
+
+    private static Item getDiamondTool(ToolType type) {
+        return switch (type) {
+            case PICKAXE -> Items.DIAMOND_PICKAXE;
+            case AXE -> Items.DIAMOND_AXE;
+            case SHOVEL -> Items.DIAMOND_SHOVEL;
+            case HOE -> Items.DIAMOND_HOE;
+            default -> null;
+        };
+    }
+
+    private static Item getIronTool(ToolType type) {
+        return switch (type) {
+            case PICKAXE -> Items.IRON_PICKAXE;
+            case AXE -> Items.IRON_AXE;
+            case SHOVEL -> Items.IRON_SHOVEL;
+            case HOE -> Items.IRON_HOE;
+            default -> null;
+        };
+    }
+
+    private static Item getStoneTool(ToolType type) {
+        return switch (type) {
+            case PICKAXE -> Items.STONE_PICKAXE;
+            case AXE -> Items.STONE_AXE;
+            case SHOVEL -> Items.STONE_SHOVEL;
+            case HOE -> Items.STONE_HOE;
+            default -> null;
+        };
+    }
+
+    private static Item getWoodTool(ToolType type) {
+        return switch (type) {
+            case PICKAXE -> Items.WOODEN_PICKAXE;
+            case AXE -> Items.WOODEN_AXE;
+            case SHOVEL -> Items.WOODEN_SHOVEL;
+            case HOE -> Items.WOODEN_HOE;
+            default -> null;
+        };
+    }
+
+    private static int countItem(CompanionEntity companion, Item item) {
+        int count = 0;
+        for (int i = 0; i < companion.getContainerSize(); i++) {
+            ItemStack stack = companion.getItem(i);
+            if (stack.getItem() == item) {
+                count += stack.getCount();
+            }
+        }
+        return count;
+    }
+
+    private static int countItemByTag(CompanionEntity companion, String tagSubstring) {
+        int count = 0;
+        for (int i = 0; i < companion.getContainerSize(); i++) {
+            ItemStack stack = companion.getItem(i);
+            String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
+            if (itemId.contains(tagSubstring)) {
+                count += stack.getCount();
+            }
+        }
+        return count;
+    }
+
+    private static boolean removeItem(CompanionEntity companion, Item item, int amount) {
+        int remaining = amount;
+        for (int i = 0; i < companion.getContainerSize() && remaining > 0; i++) {
+            ItemStack stack = companion.getItem(i);
+            if (stack.getItem() == item) {
+                int toRemove = Math.min(remaining, stack.getCount());
+                stack.shrink(toRemove);
+                if (stack.isEmpty()) {
+                    companion.setItem(i, ItemStack.EMPTY);
+                }
+                remaining -= toRemove;
+            }
+        }
+        return remaining == 0;
+    }
+
+    private static boolean removeItems(CompanionEntity companion, Item exactItem, String tagSubstring, int amount) {
+        int remaining = amount;
+        for (int i = 0; i < companion.getContainerSize() && remaining > 0; i++) {
+            ItemStack stack = companion.getItem(i);
+            boolean matches = false;
+            if (exactItem != null && stack.getItem() == exactItem) {
+                matches = true;
+            } else if (tagSubstring != null) {
+                String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
+                matches = itemId.contains(tagSubstring);
+            }
+
+            if (matches) {
+                int toRemove = Math.min(remaining, stack.getCount());
+                stack.shrink(toRemove);
+                if (stack.isEmpty()) {
+                    companion.setItem(i, ItemStack.EMPTY);
+                }
+                remaining -= toRemove;
+            }
+        }
+        return remaining == 0;
+    }
+
+    private static void addItem(CompanionEntity companion, Item item, int amount) {
+        ItemStack newStack = new ItemStack(item, amount);
+        companion.addToInventory(newStack);
+    }
 
     /**
      * Find all connected blocks of the same type (vein mining).

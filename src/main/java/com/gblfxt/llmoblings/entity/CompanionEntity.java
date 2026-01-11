@@ -629,6 +629,14 @@ public class CompanionEntity extends PathfinderMob implements Container {
     }
 
     @Override
+    public void die(DamageSource damageSource) {
+        LLMoblings.LOGGER.warn("[{}] DIED! Cause: {}, Health was: {}",
+            getCompanionName(), damageSource.getMsgId(), getHealth());
+        ChunkLoadingManager.stopLoadingChunks(this);
+        super.die(damageSource);
+    }
+
+    @Override
     protected InteractionResult mobInteract(Player player, InteractionHand hand) {
         if (player.isShiftKeyDown()) {
             // Open companion GUI (inventory/settings)
