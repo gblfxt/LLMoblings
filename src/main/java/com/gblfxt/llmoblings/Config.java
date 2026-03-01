@@ -19,6 +19,8 @@ public class Config {
     public static final ModConfigSpec.ConfigValue<Double> COMPANION_FOLLOW_DISTANCE;
     public static final ModConfigSpec.ConfigValue<Integer> ITEM_PICKUP_RADIUS;
     public static final ModConfigSpec.ConfigValue<Boolean> COMPANIONS_LOAD_CHUNKS;
+    public static final ModConfigSpec.ConfigValue<Boolean> ACTION_LOOP_ENABLED;
+    public static final ModConfigSpec.ConfigValue<Integer> ACTION_LOOP_MAX_ITERATIONS;
 
     // Chat settings
     public static final ModConfigSpec.ConfigValue<String> CHAT_PREFIX;
@@ -71,6 +73,14 @@ public class Config {
         COMPANIONS_LOAD_CHUNKS = BUILDER
                 .comment("Whether companions force-load their chunk (allows them to work when players are offline)")
                 .define("loadChunks", true);
+
+        ACTION_LOOP_ENABLED = BUILDER
+                .comment("Enable iterative action loop: companions can query (scan, status, inventory) then decide what to do")
+                .define("actionLoopEnabled", true);
+
+        ACTION_LOOP_MAX_ITERATIONS = BUILDER
+                .comment("Maximum iterations per action loop (1 = single-shot like before)")
+                .defineInRange("actionLoopMaxIterations", 3, 1, 10);
 
         BUILDER.pop();
 

@@ -186,6 +186,9 @@ SOPHISTICATED BACKPACKS (if mod is installed):
 3. Use "message" for dialogue (be friendly and helpful!)
 4. For chat/questions: {"action": "idle", "message": "your response"}
 5. Be honest about what you CAN'T do - don't pretend to have items you don't have
+6. You can use query actions (status, scan, inventory) to gather information before acting.
+   After a query, you'll receive an [OBSERVATION] with the result. Then decide your next action.
+   Example: scan first, then decide to attack or idle based on what you find.
 
 === EXAMPLES ===
 "explore" -> {"action": "explore", "message": "I'll scout the area!"}
@@ -687,6 +690,53 @@ SOPHISTICATED BACKPACKS (if mod is installed):
         // Default to idle with the response as message
         LLMoblings.LOGGER.info("No action keyword found, defaulting to idle");
         return new CompanionAction("idle", text);
+    }
+
+    /**
+     * Blocking version of chat() for use inside the async action loop.
+     * Prepends world state context to the user message.
+     */
+    public CompanionAction chatBlocking(String userMessage, String worldStateContext) {
+        try {
+            String fullMessage = worldStateContext + "\n" + userMessage;
+            conversationHistory.add(new ChatMessage("user", fullMessage));
+            String response = sendChatRequest();
+            conversationHistory.add(new ChatMessage("assistant", response));
+            return parseResponse(response);
+        } catch (Exception e) {
+            LLMoblings.LOGGER.error("Ollama chatBlocking error: ", e);
+            return new CompanionAction("idle", "Sorry, I'm having trouble thinking right now.");
+        }
+    }
+
+    /**
+     * Inject an observation into conversation history (used between loop iterations).
+     */
+    public void addSystemObservation(String observation) {
+        conversationHistory.add(new ChatMessage("user", "[OBSERVATION] " + observation));
+    }
+
+    /**
+     * After a loop ends, compact the intermediate messages down to just the original
+     * user request and the final assistant response, to avoid consuming the 20-message
+     * history window with one multi-step interaction.
+     */
+    public void compactLoopHistory(int loopMessageCount) {
+        if (loopMessageCount <= 2 || conversationHistory.size() < loopMessageCount) {
+            return;
+        }
+
+        int startIdx = conversationHistory.size() - loopMessageCount;
+        // Keep first message (original user request) and last message (final assistant response)
+        ChatMessage firstMsg = conversationHistory.get(startIdx);
+        ChatMessage lastMsg = conversationHistory.get(conversationHistory.size() - 1);
+
+        // Remove all loop messages
+        conversationHistory.subList(startIdx, conversationHistory.size()).clear();
+
+        // Re-add just the bookends
+        conversationHistory.add(firstMsg);
+        conversationHistory.add(lastMsg);
     }
 
     public void clearHistory() {

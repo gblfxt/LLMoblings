@@ -33,6 +33,10 @@ public class CompanionAction {
         return message;
     }
 
+    public JsonObject getData() {
+        return data;
+    }
+
     public String getString(String key, String defaultValue) {
         return data.has(key) ? data.get(key).getAsString() : defaultValue;
     }

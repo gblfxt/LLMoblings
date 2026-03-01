@@ -33,6 +33,11 @@ import net.minecraft.world.entity.EquipmentSlot;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Supplier;
 
 public class CompanionAI {
     private final CompanionEntity companion;
@@ -42,6 +47,7 @@ public class CompanionAI {
     // Current state
     private AIState currentState = AIState.IDLE;
     private CompletableFuture<CompanionAction> pendingAction = null;
+    private CompletableFuture<Void> pendingLoopFuture = null;
 
     // Task-specific data
     private BlockPos targetPos = null;
@@ -80,7 +86,17 @@ public class CompanionAI {
         // Check if owner just came nearby (for greetings)
         checkOwnerProximity();
 
-        // Check for pending LLM response
+        // Check for pending loop completion (errors only — loop handles actions itself)
+        if (pendingLoopFuture != null && pendingLoopFuture.isDone()) {
+            try {
+                pendingLoopFuture.get(); // surface any exceptions
+            } catch (Exception e) {
+                LLMoblings.LOGGER.error("Error in action loop: ", e);
+            }
+            pendingLoopFuture = null;
+        }
+
+        // Check for pending single-shot LLM response (non-loop mode)
         if (pendingAction != null && pendingAction.isDone()) {
             try {
                 CompanionAction action = pendingAction.get();
@@ -109,8 +125,8 @@ public class CompanionAI {
     }
 
     public void processMessage(String message, Player sender) {
-        if (pendingAction != null && !pendingAction.isDone()) {
-            // Already processing a message, queue or ignore
+        if ((pendingAction != null && !pendingAction.isDone()) ||
+            (pendingLoopFuture != null && !pendingLoopFuture.isDone())) {
             sendMessageTo(sender, "I'm still thinking about your last request...");
             return;
         }
@@ -121,7 +137,122 @@ public class CompanionAI {
         LLMoblings.LOGGER.info("[{}] Processing message from {}: {}", companion.getCompanionName(),
                 sender != null ? sender.getName().getString() : "unknown", message);
         sendMessageToAll("Thinking...");
-        pendingAction = ollamaClient.chat(message);
+
+        if (Config.ACTION_LOOP_ENABLED.get()) {
+            processMessageWithLoop(message, sender);
+        } else {
+            pendingAction = ollamaClient.chat(message);
+        }
+    }
+
+    /**
+     * Process a message using the iterative action loop.
+     * Runs async: LLM call -> execute -> if query, feed result back -> repeat.
+     */
+    private void processMessageWithLoop(String message, Player sender) {
+        int maxIterations = Config.ACTION_LOOP_MAX_ITERATIONS.get();
+
+        pendingLoopFuture = CompletableFuture.runAsync(() -> {
+            String currentMessage = message;
+            int messagesAdded = 0;
+
+            try {
+                for (int iteration = 0; iteration < maxIterations; iteration++) {
+                    LLMoblings.LOGGER.info("[{}] Action loop iteration {} of {}",
+                            companion.getCompanionName(), iteration, maxIterations);
+
+                    // Build world state on the main thread
+                    String worldState = executeOnMainThreadAndWait(
+                            () -> WorldStateBuilder.buildContext(companion));
+
+                    // Call LLM (blocking, already on async thread)
+                    CompanionAction action = ollamaClient.chatBlocking(currentMessage, worldState);
+                    messagesAdded += 2; // user + assistant messages
+
+                    // Send the LLM's chat message on the main thread (blocking to preserve order)
+                    if (action.getMessage() != null && !action.getMessage().isEmpty()) {
+                        executeOnMainThreadAndWait(() -> {
+                            sendMessage(action.getMessage());
+                            return null;
+                        });
+                    }
+
+                    // If LLM chose idle, stop the loop
+                    if ("idle".equalsIgnoreCase(action.getAction())) {
+                        executeOnMainThreadAndWait(() -> {
+                            currentState = AIState.IDLE;
+                            return null;
+                        });
+                        break;
+                    }
+
+                    // Execute the action on the main thread (with null message to avoid double-send)
+                    ActionResult result = executeOnMainThreadAndWait(() -> {
+                        CompanionAction silentAction = new CompanionAction(
+                                action.getAction(), null, action.getData());
+                        return executeAction(silentAction);
+                    });
+
+                    if (result.isTerminal()) {
+                        LLMoblings.LOGGER.info("[{}] Loop ended: terminal action '{}'",
+                                companion.getCompanionName(), result.actionName());
+                        break;
+                    }
+
+                    // Query result — feed back to LLM for next iteration
+                    ollamaClient.addSystemObservation(result.resultText());
+                    messagesAdded += 1; // observation message
+                    currentMessage = "[Continue based on the observation above.]";
+                }
+            } catch (Exception e) {
+                LLMoblings.LOGGER.error("[{}] Action loop error: ", companion.getCompanionName(), e);
+                scheduleMainThread(() -> sendMessage("Sorry, I got confused mid-thought."));
+            } finally {
+                // Compact history to avoid consuming the 20-message window
+                if (messagesAdded > 2) {
+                    ollamaClient.compactLoopHistory(messagesAdded);
+                }
+            }
+        });
+    }
+
+    /**
+     * Execute a supplier on the main server thread and block until it completes.
+     * Has a 10-second timeout to prevent deadlocks.
+     */
+    private <T> T executeOnMainThreadAndWait(Supplier<T> supplier) {
+        if (companion.level().getServer() == null) {
+            throw new IllegalStateException("No server available for main thread dispatch");
+        }
+
+        CompletableFuture<T> future = new CompletableFuture<>();
+        companion.level().getServer().execute(() -> {
+            try {
+                future.complete(supplier.get());
+            } catch (Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+
+        try {
+            return future.get(10, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            throw new CompletionException("Main thread execution timed out after 10s", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CompletionException("Main thread execution interrupted", e);
+        } catch (ExecutionException e) {
+            throw new CompletionException("Main thread execution failed", e.getCause());
+        }
+    }
+
+    /**
+     * Fire-and-forget dispatch to the main server thread.
+     */
+    private void scheduleMainThread(Runnable runnable) {
+        if (companion.level().getServer() != null) {
+            companion.level().getServer().execute(runnable);
+        }
     }
 
     /**
@@ -129,7 +260,8 @@ public class CompanionAI {
      * They can chat but not give commands.
      */
     public void processMessageFromStranger(Player stranger, String message) {
-        if (pendingAction != null && !pendingAction.isDone()) {
+        if ((pendingAction != null && !pendingAction.isDone()) ||
+            (pendingLoopFuture != null && !pendingLoopFuture.isDone())) {
             sendMessageTo(stranger, "I'm still thinking about something...");
             return;
         }
@@ -152,88 +284,151 @@ public class CompanionAI {
         }
     }
 
-    private void executeAction(CompanionAction action) {
+    private ActionResult executeAction(CompanionAction action) {
         // Send message if present
         if (action.getMessage() != null && !action.getMessage().isEmpty()) {
             sendMessage(action.getMessage());
         }
 
+        String actionName = action.getAction().toLowerCase();
         LLMoblings.LOGGER.debug("Executing action: {}", action);
 
-        switch (action.getAction().toLowerCase()) {
-            case "follow" -> startFollowing();
-            case "stay", "stop" -> stopAndStay();
-            case "goto" -> {
-                int x = action.getInt("x", (int) companion.getX());
-                int y = action.getInt("y", (int) companion.getY());
-                int z = action.getInt("z", (int) companion.getZ());
-                goTo(new BlockPos(x, y, z));
+        switch (actionName) {
+            // --- Query actions (loop continues) ---
+            case "status" -> {
+                String report = buildStatusReport();
+                sendMessage(report);
+                return ActionResult.query("status", report);
             }
-            case "come" -> comeToOwner();
-            case "mine", "gather" -> {
-                String block = action.getString("block", action.getString("item", "stone"));
-                int count = action.getInt("count", 1);
-                startMining(block, count);
-            }
-            case "attack" -> {
-                String target = action.getString("target", "hostile");
-                startAttacking(target);
-            }
-            case "defend" -> startDefending();
-            case "retreat" -> retreat();
-            case "give" -> {
-                String item = action.getString("item", "");
-                int count = action.getInt("count", 1);
-                giveItems(item, count);
-            }
-            case "status" -> reportStatus();
             case "scan" -> {
                 int radius = action.getInt("radius", 32);
-                scanArea(radius);
+                String report = buildScanReport(radius);
+                sendMessage(report);
+                return ActionResult.query("scan", report);
             }
-            case "explore", "wander", "look around" -> {
-                int radius = action.getInt("radius", 32);
-                startExploring(radius);
-            }
-            case "auto", "autonomous", "independent", "survive" -> {
-                int radius = action.getInt("radius", 32);
-                startAutonomous(radius);
-            }
-            case "idle" -> {
-                currentState = AIState.IDLE;
-            }
-            case "setbed" -> findAndSetBed();
-            case "sethome" -> setHomeHere();
-            case "home" -> goHome();
-            case "sleep" -> tryToSleep();
-            case "tpa" -> {
-                String target = action.getString("target", action.getString("player", ""));
-                requestTeleport(target);
-            }
-            case "tpaccept" -> acceptTeleport();
-            case "tpdeny" -> denyTeleport();
-            case "portal" -> {
-                String portalAction = action.getString("action", "enter");
-                handlePortalCommand(portalAction);
-            }
-            case "elevator" -> {
-                String direction = action.getString("direction", "up");
-                handleElevatorCommand(direction);
+            case "inventory", "inv", "items" -> {
+                String report = buildInventoryReport();
+                sendMessage(report);
+                return ActionResult.query("inventory", report);
             }
             case "cobblestats" -> {
                 String detail = action.getString("detail", "full");
                 String target = action.getString("target", "");
                 handleCobblestatsCommand(detail, target);
+                return ActionResult.query("cobblestats", "Pokemon stats reported to chat");
             }
-            case "equip", "gear", "arm" -> equipBestGear();
-            case "inventory", "inv", "items" -> reportInventory();
+
+            // --- Terminal actions (loop stops) ---
+            case "follow" -> {
+                startFollowing();
+                return ActionResult.terminal("follow", "Now following");
+            }
+            case "stay", "stop" -> {
+                stopAndStay();
+                return ActionResult.terminal("stay", "Staying put");
+            }
+            case "goto" -> {
+                int x = action.getInt("x", (int) companion.getX());
+                int y = action.getInt("y", (int) companion.getY());
+                int z = action.getInt("z", (int) companion.getZ());
+                goTo(new BlockPos(x, y, z));
+                return ActionResult.terminal("goto", "Going to " + x + ", " + y + ", " + z);
+            }
+            case "come" -> {
+                comeToOwner();
+                return ActionResult.terminal("come", "Coming to owner");
+            }
+            case "mine", "gather" -> {
+                String block = action.getString("block", action.getString("item", "stone"));
+                int count = action.getInt("count", 1);
+                startMining(block, count);
+                return ActionResult.terminal("mine", "Started mining " + block);
+            }
+            case "attack" -> {
+                String target = action.getString("target", "hostile");
+                startAttacking(target);
+                return ActionResult.terminal("attack", "Attacking " + target);
+            }
+            case "defend" -> {
+                startDefending();
+                return ActionResult.terminal("defend", "Defending");
+            }
+            case "retreat" -> {
+                retreat();
+                return ActionResult.terminal("retreat", "Retreating");
+            }
+            case "give" -> {
+                String item = action.getString("item", "");
+                int count = action.getInt("count", 1);
+                giveItems(item, count);
+                return ActionResult.terminal("give", "Gave items");
+            }
+            case "explore", "wander", "look around" -> {
+                int radius = action.getInt("radius", 32);
+                startExploring(radius);
+                return ActionResult.terminal("explore", "Exploring");
+            }
+            case "auto", "autonomous", "independent", "survive" -> {
+                int radius = action.getInt("radius", 32);
+                startAutonomous(radius);
+                return ActionResult.terminal("auto", "Going autonomous");
+            }
+            case "idle" -> {
+                currentState = AIState.IDLE;
+                return ActionResult.terminal("idle", "Idle");
+            }
+            case "setbed" -> {
+                findAndSetBed();
+                return ActionResult.terminal("setbed", "Set bed");
+            }
+            case "sethome" -> {
+                setHomeHere();
+                return ActionResult.terminal("sethome", "Set home");
+            }
+            case "home" -> {
+                goHome();
+                return ActionResult.terminal("home", "Going home");
+            }
+            case "sleep" -> {
+                tryToSleep();
+                return ActionResult.terminal("sleep", "Trying to sleep");
+            }
+            case "tpa" -> {
+                String target = action.getString("target", action.getString("player", ""));
+                requestTeleport(target);
+                return ActionResult.terminal("tpa", "Teleporting to " + target);
+            }
+            case "tpaccept" -> {
+                acceptTeleport();
+                return ActionResult.terminal("tpaccept", "Accepted teleport");
+            }
+            case "tpdeny" -> {
+                denyTeleport();
+                return ActionResult.terminal("tpdeny", "Denied teleport");
+            }
+            case "portal" -> {
+                String portalAction = action.getString("action", "enter");
+                handlePortalCommand(portalAction);
+                return ActionResult.terminal("portal", "Portal action: " + portalAction);
+            }
+            case "elevator" -> {
+                String direction = action.getString("direction", "up");
+                handleElevatorCommand(direction);
+                return ActionResult.terminal("elevator", "Elevator " + direction);
+            }
+            case "equip", "gear", "arm" -> {
+                equipBestGear();
+                return ActionResult.terminal("equip", "Equipped best gear");
+            }
             case "getgear", "getarmor", "craftgear", "ironset", "meget" -> {
                 String material = action.getString("material", "iron");
                 getGearFromME(material);
+                return ActionResult.terminal("getgear", "Getting " + material + " gear");
             }
             case "deposit", "store", "stash", "putaway" -> {
                 boolean keepGear = action.getBoolean("keepGear", true);
                 depositItems(keepGear);
+                return ActionResult.terminal("deposit", "Depositing items");
             }
             case "build" -> {
                 String structure = action.getString("structure", "cottage");
@@ -243,26 +438,31 @@ public class CompanionAI {
                 int z = action.getInt("z", (int) companion.getZ());
                 BlockPos location = here ? companion.blockPosition() : new BlockPos(x, y, z);
                 startBuilding(structure, location);
+                return ActionResult.terminal("build", "Building " + structure);
             }
             case "pokemon", "buddy", "pokemonbuddy" -> {
                 String subAction = action.getString("subaction", "find");
                 handlePokemonBuddy(subAction, action.getString("name", null));
+                return ActionResult.terminal("pokemon", "Pokemon " + subAction);
             }
             case "gadget", "buildinggadget", "gadgets" -> {
                 String subAction = action.getString("subaction", "info");
                 String blockName = action.getString("block", null);
                 int range = action.getInt("range", -1);
                 handleBuildingGadget(subAction, blockName, range);
+                return ActionResult.terminal("gadget", "Gadget " + subAction);
             }
             case "backpack", "pack", "bag" -> {
                 String subAction = action.getString("subaction", "info");
                 String itemName = action.getString("item", null);
                 int count = action.getInt("count", -1);
                 handleBackpack(subAction, itemName, count);
+                return ActionResult.terminal("backpack", "Backpack " + subAction);
             }
             default -> {
                 LLMoblings.LOGGER.warn("[{}] Unknown action: {}", companion.getCompanionName(), action.getAction());
                 currentState = AIState.IDLE;
+                return ActionResult.failure(actionName, "Unknown action: " + actionName);
             }
         }
     }
@@ -1313,7 +1513,7 @@ public class CompanionAI {
         }
     }
 
-    private void reportStatus() {
+    private String buildStatusReport() {
         float health = companion.getHealth();
         float maxHealth = companion.getMaxHealth();
         int itemCount = 0;
@@ -1321,17 +1521,19 @@ public class CompanionAI {
             if (!companion.getItem(i).isEmpty()) itemCount++;
         }
 
-        String status = String.format(
+        return String.format(
                 "Health: %.0f/%.0f, Inventory: %d/%d slots used, State: %s",
                 health, maxHealth, itemCount, companion.getContainerSize(), currentState
         );
-        sendMessage(status);
     }
 
-    private void scanArea(int radius) {
+    private void reportStatus() {
+        sendMessage(buildStatusReport());
+    }
+
+    private String buildScanReport(int radius) {
         AABB scanBox = companion.getBoundingBox().inflate(radius);
 
-        // Count mobs
         List<Monster> hostiles = companion.level().getEntitiesOfClass(Monster.class, scanBox);
         List<LivingEntity> friendlies = companion.level().getEntitiesOfClass(LivingEntity.class, scanBox,
                 e -> !(e instanceof Monster) && !(e instanceof Player));
@@ -1340,9 +1542,13 @@ public class CompanionAI {
                 "Scan complete! Found %d hostile mobs, %d passive mobs in %d block radius.",
                 hostiles.size(), friendlies.size(), radius
         );
-        sendMessage(report);
         LLMoblings.LOGGER.info("[{}] Scan: {} hostiles, {} friendlies in {}m radius",
                 companion.getCompanionName(), hostiles.size(), friendlies.size(), radius);
+        return report;
+    }
+
+    private void scanArea(int radius) {
+        sendMessage(buildScanReport(radius));
     }
 
     private void findAndSetBed() {
@@ -1492,7 +1698,7 @@ public class CompanionAI {
         return 0;
     }
 
-    private void reportInventory() {
+    private String buildInventoryReport() {
         StringBuilder sb = new StringBuilder();
 
         // Report equipped items
@@ -1540,7 +1746,11 @@ public class CompanionAI {
             if (foodCount > 0) sb.append(", ").append(foodCount).append(" food");
         }
 
-        sendMessage(sb.toString());
+        return sb.toString();
+    }
+
+    private void reportInventory() {
+        sendMessage(buildInventoryReport());
     }
 
     private void getGearFromME(String material) {

@@ -206,6 +206,18 @@ Companions detect and can use:
 | `scan <radius>` | Scan for mobs/resources |
 | `status` | Report health and inventory |
 
+**Multi-Step Commands (Iterative Action Loop):**
+
+Companions can now chain multiple actions per request. Query actions (scan, status, inventory) feed results back to the LLM, which then decides the next action:
+
+| Example | What Happens |
+|---------|--------------|
+| `check inventory and equip your best weapon` | Queries inventory → equips best weapon |
+| `are there monsters nearby? defend me if so` | Scans area → defends or idles |
+| `scan the area and mine any diamonds you find` | Scans → starts mining if found |
+
+The loop runs up to 3 iterations by default (configurable). Simple commands like `follow me` still complete in a single step.
+
 **Building:**
 | Command | Description |
 |---------|-------------|
@@ -332,6 +344,8 @@ needFood = false              # Hunger system
 followDistance = 5.0          # Default follow distance
 itemPickupRadius = 3          # Item pickup range
 loadChunks = true             # Force-load companion's chunk
+actionLoopEnabled = true      # Multi-step action loop (query → decide → act)
+actionLoopMaxIterations = 3   # Max iterations per loop (1 = single-shot)
 ```
 
 ### Chat Settings
